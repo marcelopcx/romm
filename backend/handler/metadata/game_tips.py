@@ -83,6 +83,16 @@ def _norm(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", "".join(c for c in text if not unicodedata.combining(c)))
 
 
+def _name_variants(name: str) -> list[str]:
+    """The name, then its parts around ":" or " - " ("CTR: Crash Team Racing" -> "Crash Team Racing")."""
+    variants = [name]
+    for part in re.split(r"\s*(?::|\s-\s)\s*", name):
+        part = part.strip()
+        if len(part) >= 4 and part not in variants:
+            variants.append(part)
+    return variants
+
+
 def _strip_parens(title: str) -> str:
     return re.sub(r"\s*\(.*?\)\s*", " ", title).strip()
 
@@ -214,14 +224,22 @@ async def _cheats(rom: dict[str, Any]) -> list[dict[str, Any]]:
             response = await _get(_CHT_BASE + quote(folder) + "/" + quote(filename))
         return device, (response.text if response is not None else None)
 
-    results = await asyncio.gather(*(fetch(d, f) for d, f in _cht_candidates(rom)))
+    candidates = _cht_candidates(rom)
+    results = await asyncio.gather(*(fetch(d, f) for d, f in candidates))
     groups: list[dict[str, Any]] = []
-    for device, text in results:
+    seen: set[tuple[tuple[str, str], ...]] = set()
+    for (device, filename), (_, text) in zip(candidates, results):
         if not text:
             continue
-        entries = parse_cht(text)
-        if entries:
-            groups.append({"device": device or "Cheats", "entries": entries[:_MAX_CHEATS]})
+        entries = parse_cht(text)[:_MAX_CHEATS]
+        signature = tuple((e["description"], e["code"]) for e in entries)
+        if not entries or signature in seen:
+            continue
+        seen.add(signature)
+        tags = re.findall(r"\(([^)]*)\)", filename)
+        region = tags[0] if tags and tags[0] != device else ""
+        label = " · ".join(part for part in (device or "Cheats", region) if part)
+        groups.append({"device": label, "entries": entries})
     return groups
 
 
@@ -337,15 +355,21 @@ async def get_tips(rom: dict[str, Any], lang: str) -> dict[str, Any]:
     wiki_langs = [lang, "en"] if lang and lang != "en" else ["en"]
 
     async def wiki() -> dict[str, Any] | None:
-        for language in wiki_langs:
-            result = await _wikipedia(name, language)
+        for variant in _name_variants(name):
+            for language in wiki_langs:
+                result = await _wikipedia(variant, language)
+                if result:
+                    return result
+        return None
+
+    async def strategy() -> dict[str, Any] | None:
+        for variant in _name_variants(name):
+            result = await _strategywiki(variant)
             if result:
                 return result
         return None
 
-    wikipedia, cheats, guide = await asyncio.gather(
-        wiki(), _cheats(rom), _strategywiki(name)
-    )
+    wikipedia, cheats, guide = await asyncio.gather(wiki(), _cheats(rom), strategy())
     tips: dict[str, Any] = {"wikipedia": wikipedia, "cheats": cheats, "guide": guide}
     await _translate_tips(tips, lang)
     # Nothing found is cached too, but only for a day: sources fill in over time.

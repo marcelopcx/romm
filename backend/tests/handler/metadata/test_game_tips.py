@@ -45,11 +45,38 @@ def test_cheat_candidates_follow_no_intro_naming():
     assert ("GameShark", "CTR (USA) (GameShark).cht") in tagged
 
 
+def test_name_variants_split_prefixes_and_subtitles():
+    assert gt._name_variants("CTR: Crash Team Racing") == [
+        "CTR: Crash Team Racing",
+        "Crash Team Racing",
+    ]
+    assert gt._name_variants("Tetris") == ["Tetris"]
+
+
 def test_names_match_ignoring_case_accents_and_parentheses():
     assert gt._norm(gt._strip_parens("Crash Team Racing (videojuego)")) == gt._norm(
         "crash team racing"
     )
     assert gt._norm("Pokémon") == gt._norm("pokemon")
+
+
+@pytest.mark.asyncio
+async def test_identical_regional_cheat_files_collapse_into_one_group(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    class Response:
+        status_code = 200
+        text = 'cheat0_desc = "Infinite Lives"\ncheat0_code = "1"\n'
+
+    async def fake_get(url, params=None):
+        hit = "%28USA%29%20%28GameShark%29" in url or "%28Europe%29%20%28GameShark%29" in url
+        return Response() if hit else None
+
+    monkeypatch.setattr(gt, "_get", fake_get)
+    groups = await gt._cheats(
+        {"fs_name_no_ext": "Game", "fs_name_no_tags": "Game", "platform_fs_slug": "psx"}
+    )
+    assert [g["device"] for g in groups] == ["GameShark · USA"]
 
 
 @pytest.mark.asyncio
