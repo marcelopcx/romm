@@ -3,6 +3,15 @@ import storeLanguage from "@/stores/language";
 
 export type TipSection = { title: string; text: string };
 
+export type TipBlock =
+  | { type: "heading" | "paragraph"; text: string }
+  | { type: "list"; items: string[] }
+  | { type: "table"; headers: string[]; rows: string[][] };
+
+export type TipPage = { title: string; source: string; blocks: TipBlock[] };
+
+export type TipCategoryId = "basics" | "guide" | "items" | "enemies" | "data";
+
 export type RomTips = {
   wikipedia: {
     title: string;
@@ -10,19 +19,15 @@ export type RomTips = {
     summary: string;
     sections: TipSection[];
   } | null;
-  cheats: {
-    device: string;
-    entries: { description: string; code: string }[];
-  }[];
-  guide: { title: string; pages: TipSection[] } | null;
+  categories: { id: TipCategoryId; pages: TipPage[] }[];
 };
 
-// The server gathers the tips from open sources and translates them to the
+// The server gathers the guide from open wikis and translates it to the
 // interface language, so the first request for a game can take a few seconds.
 export async function getRomTips(romId: number): Promise<RomTips> {
   const { data } = await api.get<RomTips>(`/roms/${romId}/tips`, {
     params: { lang: storeLanguage().selectedLanguage.value },
-    timeout: 90_000,
+    timeout: 120_000,
   });
   return data;
 }

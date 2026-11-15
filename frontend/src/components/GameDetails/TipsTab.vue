@@ -1,19 +1,50 @@
 <script setup lang="ts">
-// TipsTab: what the open sources say about this game, shown in place. The
-// server gathers it (Wikipedia overview, cheat codes from libretro, StrategyWiki
-// guide pages) and translates it to the interface language; nothing here
-// leaves RomM.
-import { computed, ref, watch } from "vue";
+// TipsTab: a guide for the game, laid out like the Media tab: a column of
+// subtabs on the left (a sheet on phones) and the selected one on the right.
+// The server gathers it from open wikis (overview, walkthrough, items, enemies
+// and bosses, data lists) and translates it to the interface language; nothing
+// here leaves RomM.
+import { computed, ref, useId, watch } from "vue";
 import { useI18n } from "vue-i18n";
+import SubtabNav, {
+  type SubtabNavItem,
+} from "@/components/GameDetails/SubtabNav.vue";
+import TipPage from "@/components/GameDetails/TipPage.vue";
+import { useBreakpoint } from "@/composables/useBreakpoint";
+import { useSubtabQuery } from "@/composables/useSubtabQuery";
 import { RIcon } from "@/lib";
-import { getRomTips, type RomTips } from "@/services/api/tips";
+import {
+  getRomTips,
+  type RomTips,
+  type TipCategoryId,
+} from "@/services/api/tips";
 import type { DetailedRom } from "@/stores/roms";
+import { tabId, tabPanelId } from "@/utils/tabIds";
 
 defineOptions({ inheritAttrs: false });
 
 const props = defineProps<{ rom: DetailedRom }>();
 
 const { t } = useI18n();
+const { smAndDown } = useBreakpoint();
+
+type Subtab = "overview" | TipCategoryId;
+const SUBTABS: readonly Subtab[] = [
+  "overview",
+  "basics",
+  "guide",
+  "items",
+  "enemies",
+  "data",
+];
+const ICONS: Record<Subtab, string> = {
+  overview: "mdi-text-box-outline",
+  basics: "mdi-gamepad-variant-outline",
+  guide: "mdi-map-legend",
+  items: "mdi-treasure-chest-outline",
+  enemies: "mdi-sword-cross",
+  data: "mdi-table",
+};
 
 const tips = ref<RomTips | null>(null);
 const loading = ref(true);
@@ -39,249 +70,197 @@ watch(
   { immediate: true },
 );
 
-const isEmpty = computed(
-  () =>
-    !!tips.value &&
-    !tips.value.wikipedia &&
-    !tips.value.guide &&
-    tips.value.cheats.length === 0,
+const selected = useSubtabQuery<Subtab>(
+  "tips",
+  (value) => SUBTABS.includes(value as Subtab),
+  "overview",
 );
 
-const filter = ref("");
-const showAll = ref(false);
-const CHEATS_SHOWN = 40;
-
-const cheatGroups = computed(() => {
-  const needle = filter.value.trim().toLowerCase();
-  return (tips.value?.cheats ?? []).map((group) => {
-    const matching = needle
-      ? group.entries.filter((e) =>
-          e.description.toLowerCase().includes(needle),
-        )
-      : group.entries;
-    return {
-      device: group.device,
-      total: matching.length,
-      entries:
-        showAll.value || needle ? matching : matching.slice(0, CHEATS_SHOWN),
-    };
-  });
+const pagesBy = computed(() => {
+  const map = new Map<TipCategoryId, RomTips["categories"][number]["pages"]>();
+  for (const category of tips.value?.categories ?? [])
+    map.set(category.id, category.pages);
+  return map;
 });
+
+const available = computed<Subtab[]>(() =>
+  SUBTABS.filter((id) =>
+    id === "overview" ? !!tips.value?.wikipedia : pagesBy.value.has(id),
+  ),
+);
+
+// A subtab this game has nothing for shows the first one it does have.
+const active = computed<Subtab>(() =>
+  available.value.includes(selected.value)
+    ? selected.value
+    : (available.value[0] ?? "overview"),
+);
+
+const subtabDefs = computed<SubtabNavItem<Subtab>[]>(() =>
+  available.value.map((id) => ({
+    id,
+    label: t(`rom.tips-cat-${id}`),
+    icon: ICONS[id],
+    ...(id === "overview" ? {} : { badge: pagesBy.value.get(id)?.length ?? 0 }),
+  })),
+);
+
+const isEmpty = computed(() => !!tips.value && available.value.length === 0);
+
+// The sheet variant has no tabs to label the panels, so they stay sections.
+const tabIdPrefix = useId();
+function panelAttrs(id: Subtab): Record<string, string> {
+  if (smAndDown.value) return {};
+  return {
+    id: tabPanelId(tabIdPrefix, id),
+    role: "tabpanel",
+    "aria-labelledby": tabId(tabIdPrefix, id),
+  };
+}
 </script>
 
 <template>
-  <div class="tips-tab">
-    <div v-if="loading" class="tips-tab__state">
-      <RIcon icon="mdi-loading" size="20" class="tips-tab__spin" />
+  <div class="r-tips">
+    <div v-if="loading" class="r-tips__state">
+      <RIcon icon="mdi-loading" size="20" class="r-tips__spin" />
       {{ t("rom.tips-loading") }}
     </div>
-    <div v-else-if="failed" class="tips-tab__state">
+    <div v-else-if="failed" class="r-tips__state">
       {{ t("rom.tips-error") }}
     </div>
-    <div v-else-if="isEmpty" class="tips-tab__state">
+    <div v-else-if="isEmpty" class="r-tips__state">
       {{ t("rom.tips-empty") }}
     </div>
 
     <template v-else-if="tips">
-      <!-- Overview -->
-      <section v-if="tips.wikipedia" class="tips-tab__section">
-        <h3 class="tips-tab__heading">{{ t("rom.tips-overview") }}</h3>
-        <p class="tips-tab__text">{{ tips.wikipedia.summary }}</p>
-        <div
-          v-for="section in tips.wikipedia.sections"
-          :key="section.title"
-          class="tips-tab__block"
-        >
-          <h4 class="tips-tab__subheading">{{ section.title }}</h4>
-          <p class="tips-tab__text">{{ section.text }}</p>
-        </div>
-      </section>
-
-      <!-- Cheat codes -->
-      <section v-if="tips.cheats.length" class="tips-tab__section">
-        <h3 class="tips-tab__heading">{{ t("rom.tips-cheats") }}</h3>
-        <input
-          v-model="filter"
-          type="search"
-          class="tips-tab__filter"
-          :placeholder="t('rom.tips-cheats-filter')"
+      <SubtabNav
+        v-if="smAndDown"
+        :model-value="active"
+        :items="subtabDefs"
+        variant="menu"
+        @update:model-value="selected = $event"
+      />
+      <aside v-else class="r-tips__sidebar">
+        <SubtabNav
+          :model-value="active"
+          :items="subtabDefs"
+          :id-prefix="tabIdPrefix"
+          @update:model-value="selected = $event"
         />
-        <div
-          v-for="group in cheatGroups"
-          :key="group.device"
-          class="tips-tab__block"
-        >
-          <h4 class="tips-tab__subheading">
-            {{ group.device }}
-            <span class="tips-tab__count">{{ group.total }}</span>
-          </h4>
-          <ul class="tips-tab__cheats">
-            <li
-              v-for="(entry, i) in group.entries"
-              :key="`${i}-${entry.code}`"
-              class="tips-tab__cheat"
-            >
-              <span class="tips-tab__cheat-desc">{{ entry.description }}</span>
-              <code class="tips-tab__code">{{ entry.code }}</code>
-            </li>
-          </ul>
-        </div>
-        <button
-          v-if="!showAll && !filter"
-          type="button"
-          class="tips-tab__more"
-          @click="showAll = true"
-        >
-          {{ t("rom.tips-show-all") }}
-        </button>
-      </section>
+      </aside>
 
-      <!-- Guide -->
-      <section v-if="tips.guide" class="tips-tab__section">
-        <h3 class="tips-tab__heading">{{ t("rom.tips-guide") }}</h3>
-        <details
-          v-for="(page, i) in tips.guide.pages"
-          :key="page.title"
-          class="tips-tab__page"
-          :open="i === 0"
+      <div class="r-tips__content">
+        <section
+          v-if="active === 'overview' && tips.wikipedia"
+          class="r-tips__panel"
+          v-bind="panelAttrs('overview')"
         >
-          <summary class="tips-tab__page-title">{{ page.title }}</summary>
-          <p class="tips-tab__text">{{ page.text }}</p>
-        </details>
-      </section>
+          <p class="r-tips__text">{{ tips.wikipedia.summary }}</p>
+          <div
+            v-for="section in tips.wikipedia.sections"
+            :key="section.title"
+            class="r-tips__block"
+          >
+            <h3 class="r-tips__heading">{{ section.title }}</h3>
+            <p class="r-tips__text">{{ section.text }}</p>
+          </div>
+        </section>
 
-      <p class="tips-tab__sources">{{ t("rom.tips-sources") }}</p>
+        <section
+          v-else-if="active !== 'overview'"
+          :key="active"
+          class="r-tips__panel"
+          v-bind="panelAttrs(active)"
+        >
+          <TipPage
+            v-for="(page, i) in pagesBy.get(active) ?? []"
+            :key="`${active}-${page.title}`"
+            :page="page"
+            :open="i === 0"
+          />
+        </section>
+
+        <p class="r-tips__sources">{{ t("rom.tips-sources") }}</p>
+      </div>
     </template>
   </div>
 </template>
 
 <style scoped>
-.tips-tab {
+.r-tips {
   display: flex;
-  flex-direction: column;
+  align-items: flex-start;
   gap: 24px;
+  min-height: 0;
 }
 
-.tips-tab__state {
+/* Phones stack the sheet trigger above the content. */
+@media (max-width: 959px) {
+  .r-tips {
+    flex-direction: column;
+    gap: 16px;
+  }
+}
+
+.r-tips__state {
   display: flex;
   align-items: center;
   gap: 10px;
   font-size: 13px;
   color: var(--r-color-fg-muted);
 }
-.tips-tab__spin {
-  animation: tips-spin 1s linear infinite;
+.r-tips__spin {
+  animation: r-tips-spin 1s linear infinite;
 }
-@keyframes tips-spin {
+@keyframes r-tips-spin {
   to {
     transform: rotate(360deg);
   }
 }
 
-.tips-tab__section {
+.r-tips__sidebar {
+  width: 220px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 0;
+}
+
+.r-tips__content {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.r-tips__panel {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.tips-tab__heading {
-  margin: 0;
+.r-tips__block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.r-tips__heading {
+  margin: 8px 0 0;
   font-size: var(--r-font-size-md);
   font-weight: var(--r-font-weight-semibold);
   color: var(--r-color-fg);
 }
-.tips-tab__subheading {
-  margin: 0 0 6px;
-  font-size: 12px;
-  font-weight: var(--r-font-weight-bold);
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--r-color-fg-faint);
-}
-.tips-tab__count {
-  margin-left: 6px;
-  font-weight: var(--r-font-weight-regular, 400);
-  color: var(--r-color-fg-muted);
-}
 
-.tips-tab__text {
+.r-tips__text {
   margin: 0;
   font-size: 13.5px;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--r-color-fg-secondary);
   white-space: pre-line;
 }
 
-.tips-tab__filter {
-  max-width: 360px;
-  padding: 8px 12px;
-  border: 1px solid var(--r-color-border);
-  border-radius: var(--r-radius-md);
-  background: var(--r-color-surface);
-  color: var(--r-color-fg);
-  font-size: 13px;
-}
-
-.tips-tab__cheats {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-}
-.tips-tab__cheat {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--r-color-border);
-  font-size: 13px;
-}
-.tips-tab__cheat-desc {
-  color: var(--r-color-fg-secondary);
-  min-width: 0;
-}
-.tips-tab__code {
-  flex: none;
-  max-width: 55%;
-  font-family: var(--r-font-mono, ui-monospace, monospace);
-  font-size: 12px;
-  color: var(--r-color-fg-muted);
-  word-break: break-all;
-  text-align: right;
-}
-
-.tips-tab__more {
-  align-self: flex-start;
-  padding: 8px 14px;
-  border: 1px solid var(--r-color-border);
-  border-radius: var(--r-radius-md);
-  background: transparent;
-  color: var(--r-color-fg);
-  font-size: 13px;
-  cursor: pointer;
-}
-.tips-tab__more:hover {
-  border-color: var(--r-color-brand-primary);
-}
-
-.tips-tab__page {
-  border: 1px solid var(--r-color-border);
-  border-radius: var(--r-radius-md);
-  padding: 10px 14px;
-  background: var(--r-color-surface);
-}
-.tips-tab__page-title {
-  cursor: pointer;
-  font-size: 13.5px;
-  font-weight: var(--r-font-weight-semibold);
-  color: var(--r-color-fg);
-}
-.tips-tab__page[open] .tips-tab__page-title {
-  margin-bottom: 8px;
-}
-
-.tips-tab__sources {
+.r-tips__sources {
   margin: 0;
   font-size: 11.5px;
   color: var(--r-color-fg-faint);

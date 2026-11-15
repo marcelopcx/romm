@@ -1,86 +1,106 @@
-import asyncio
 from pathlib import Path
 
 import pytest
 
 from handler.metadata import game_tips as gt
 
-CHT = """cheats = 2
-
-cheat0_desc = "Infinite Lives"
-cheat0_code = "8001ABCD+0009"
-cheat0_enable = false
-
-cheat1_desc = "Max Money"
-cheat1_code = "8001FFFF+03E7"
-cheat1_enable = false
+PAGE = """
+<div class="toc"><ul><li>Contents</li></ul></div>
+<table class="infobox"><tr><td>Infobox</td><td>skip me</td></tr></table>
+<h2>Shop<span class="mw-editsection">[edit]</span></h2>
+<p>Buy cards with Star Chips.<sup>[1]</sup> Passwords are eight digits.</p>
+<ul><li>Blue-Eyes White Dragon</li><li>Dark Magician</li></ul>
+<table>
+  <tr><th>Card</th><th>Password</th><th>Cost</th></tr>
+  <tr><td>Blue-Eyes White Dragon</td><td>89631139</td><td>999,999</td></tr>
+  <tr><td>Mystical Elf</td><td>15025844</td><td>160</td></tr>
+</table>
+<h2>Empty heading</h2>
+<div class="navbox">Nav</div>
 """
 
-WIKI = (
-    "Crash Team Racing es un videojuego de carreras.\n\n"
-    "== Sistema de juego ==\n" + "Se conduce con karts y se usan armas. " * 6 + "\n\n"
-    "== Recepción ==\nBien recibido.\n"
+
+def test_html_becomes_plain_blocks_without_the_noise():
+    blocks = gt.html_to_blocks(PAGE)
+    assert blocks[0] == {"type": "heading", "text": "Shop"}
+    assert blocks[1] == {
+        "type": "paragraph",
+        "text": "Buy cards with Star Chips. Passwords are eight digits.",
+    }
+    assert blocks[2] == {
+        "type": "list",
+        "items": ["Blue-Eyes White Dragon", "Dark Magician"],
+    }
+    table = blocks[3]
+    assert table["type"] == "table"
+    assert table["headers"] == ["Card", "Password", "Cost"]
+    assert table["rows"][1] == ["Mystical Elf", "15025844", "160"]
+    # Infobox, contents list, nav box and the heading with nothing under it are gone.
+    assert len(blocks) == 4
+    assert "Infobox" not in str(blocks)
+
+
+def test_wide_data_tables_are_kept():
+    cols = 9  # a card list: number, name, type, ..., password, cost
+    head = "".join(f"<th>c{i}</th>" for i in range(cols))
+    row = "".join(f"<td>v{i}</td>" for i in range(cols))
+    blocks = gt.html_to_blocks(f"<table><tr>{head}</tr><tr>{row}</tr></table>")
+    assert blocks and blocks[0]["type"] == "table" and len(blocks[0]["headers"]) == 9
+
+
+def test_api_path_depends_on_the_wiki():
+    assert gt._api("yugioh.fandom.com") == "https://yugioh.fandom.com/api.php"
+    assert gt._api("strategywiki.org") == "https://strategywiki.org/w/api.php"
+    assert gt._api("es.wikipedia.org") == "https://es.wikipedia.org/w/api.php"
+
+
+def test_tables_are_capped_and_never_carry_markup():
+    rows = "".join(f"<tr><td>{i}</td><td><b>x</b>{i}</td></tr>" for i in range(50))
+    blocks = gt.html_to_blocks(f"<table><tr><th>#</th><th>v</th></tr>{rows}</table>", max_rows=10)
+    assert len(blocks[0]["rows"]) == 10
+    assert "<" not in str(blocks)
+
+
+@pytest.mark.parametrize(
+    ("title", "category"),
+    [
+        ("Controls", "basics"),
+        ("Items", "items"),
+        ("Shop", "items"),
+        ("Bosses", "enemies"),
+        ("Duelists", "enemies"),
+        ("Card List 001 - 200", "data"),
+        ("Bestiary", "enemies"),
+        ("Deepwood Shrine", "guide"),
+    ],
 )
+def test_pages_are_sorted_into_categories(title: str, category: str):
+    assert gt.category_of(title) == category
 
 
-def test_parse_cht_pairs_descriptions_with_codes():
-    assert gt.parse_cht(CHT) == [
-        {"description": "Infinite Lives", "code": "8001ABCD+0009"},
-        {"description": "Max Money", "code": "8001FFFF+03E7"},
-    ]
+def test_name_variants_and_display_titles():
+    assert gt._name_variants("CTR: Crash Team Racing") == ["CTR: Crash Team Racing", "Crash Team Racing"]
+    assert gt._display_title("Crash Team Racing/Controls", "Crash Team Racing") == "Controls"
+    assert gt._display_title("Yu-Gi-Oh! Forbidden Memories: Card List 001 - 200", "Yu-Gi-Oh! Forbidden Memories") == "Card List 001 - 200"
+
+
+def test_the_same_list_reached_twice_is_kept_once():
+    table = {"type": "table", "headers": ["a", "b"], "rows": [["1", "2"], ["3", "4"]]}
+    one = {"title": "Card List", "source": "Fandom", "blocks": [table]}
+    two = {"title": "Card List 001 - 200", "source": "Fandom", "blocks": [dict(table)]}
+    assert gt._signature(one) == gt._signature(two)
+    assert gt._signature(one) != gt._signature({"title": "x", "source": "s", "blocks": [{"type": "paragraph", "text": "t"}]})
 
 
 def test_wikipedia_keeps_gameplay_sections_only():
-    summary, sections = gt._wiki_sections(WIKI)
-    assert summary.startswith("Crash Team Racing")
+    extract = "Intro text.\n\n== Sistema de juego ==\n" + "Se conduce con karts. " * 8 + "\n\n== Recepción ==\nBien.\n"
+    summary, sections = gt._wiki_sections(extract)
+    assert summary == "Intro text."
     assert [s["title"] for s in sections] == ["Sistema de juego"]
 
 
-def test_cheat_candidates_follow_no_intro_naming():
-    plain = gt._cht_candidates({"fs_name_no_ext": "Advance Wars", "fs_name_no_tags": "Advance Wars"})
-    assert ("Code Breaker", "Advance Wars (USA) (Code Breaker).cht") in plain
-    tagged = gt._cht_candidates(
-        {"fs_name_no_ext": "CTR (USA)", "fs_name_no_tags": "CTR"}
-    )
-    assert ("GameShark", "CTR (USA) (GameShark).cht") in tagged
-
-
-def test_name_variants_split_prefixes_and_subtitles():
-    assert gt._name_variants("CTR: Crash Team Racing") == [
-        "CTR: Crash Team Racing",
-        "Crash Team Racing",
-    ]
-    assert gt._name_variants("Tetris") == ["Tetris"]
-
-
-def test_names_match_ignoring_case_accents_and_parentheses():
-    assert gt._norm(gt._strip_parens("Crash Team Racing (videojuego)")) == gt._norm(
-        "crash team racing"
-    )
-    assert gt._norm("Pokémon") == gt._norm("pokemon")
-
-
 @pytest.mark.asyncio
-async def test_identical_regional_cheat_files_collapse_into_one_group(
-    monkeypatch: pytest.MonkeyPatch,
-):
-    class Response:
-        status_code = 200
-        text = 'cheat0_desc = "Infinite Lives"\ncheat0_code = "1"\n'
-
-    async def fake_get(url, params=None):
-        hit = "%28USA%29%20%28GameShark%29" in url or "%28Europe%29%20%28GameShark%29" in url
-        return Response() if hit else None
-
-    monkeypatch.setattr(gt, "_get", fake_get)
-    groups = await gt._cheats(
-        {"fs_name_no_ext": "Game", "fs_name_no_tags": "Game", "platform_fs_slug": "psx"}
-    )
-    assert [g["device"] for g in groups] == ["GameShark · USA"]
-
-
-@pytest.mark.asyncio
-async def test_tips_are_gathered_cached_and_translated(
+async def test_guide_is_gathered_translated_and_cached(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setattr(gt, "CACHE_DIR", tmp_path)
@@ -90,28 +110,41 @@ async def test_tips_are_gathered_cached_and_translated(
         calls["n"] += 1
         return {"title": name, "language": language, "summary": "Resumen", "sections": []}
 
-    async def cheats(rom):
-        return [{"device": "GameShark", "entries": [{"description": "Infinite Lives", "code": "1"}]}]
-
-    async def guide(name):
-        return {"title": name, "pages": [{"title": "Controls", "text": "Press X."}]}
+    async def pages(name):
+        return {
+            "items": [
+                {
+                    "title": "Items",
+                    "source": "StrategyWiki",
+                    "blocks": [
+                        {"type": "paragraph", "text": "Find the rare sword."},
+                        {"type": "table", "headers": ["Item", "Where"], "rows": [["Sword", "Cave"]]},
+                    ],
+                }
+            ],
+            "guide": [],
+        }
 
     async def translate(texts, lang):
         return {t: f"[{lang}] {t}" for t in texts}
 
     monkeypatch.setattr(gt, "_wikipedia", wiki)
-    monkeypatch.setattr(gt, "_cheats", cheats)
-    monkeypatch.setattr(gt, "_strategywiki", guide)
+    monkeypatch.setattr(gt, "_collect_pages", pages)
     monkeypatch.setattr(gt, "translate_now", translate)
 
-    rom = {"id": 5, "name": "Crash Team Racing", "platform_fs_slug": "psx"}
+    rom = {"id": 5, "name": "Some Game (USA)"}
     tips = await gt.get_tips(rom, "es")
-    assert tips["cheats"][0]["entries"][0]["description"] == "[es] Infinite Lives"
-    assert tips["guide"]["pages"][0]["text"] == "[es] Press X."
+    (category,) = tips["categories"]
+    assert category["id"] == "items"
+    page = category["pages"][0]
+    assert page["title"] == "[es] Items"
+    assert page["blocks"][0]["text"] == "[es] Find the rare sword."
+    assert page["blocks"][1]["headers"] == ["[es] Item", "[es] Where"]
+    assert page["blocks"][1]["rows"] == [["Sword", "Cave"]]  # short cells are names: untouched
     assert tips["wikipedia"]["language"] == "es"
 
     again = await gt.get_tips(rom, "es")
-    assert again == tips and calls["n"] == 1  # second call came from the cache
+    assert again == tips and calls["n"] == 1
 
 
 @pytest.mark.asyncio
@@ -123,13 +156,11 @@ async def test_nothing_found_returns_empty_and_is_not_cached(
     async def none(*_a):
         return None
 
-    async def empty(_rom):
-        return []
+    async def nothing(_name):
+        return {}
 
     monkeypatch.setattr(gt, "_wikipedia", none)
-    monkeypatch.setattr(gt, "_cheats", empty)
-    monkeypatch.setattr(gt, "_strategywiki", none)
-    tips = await gt.get_tips({"id": 9, "name": "Obscure Game", "platform_fs_slug": "nes"}, "")
-    assert tips == {"wikipedia": None, "cheats": [], "guide": None}
+    monkeypatch.setattr(gt, "_collect_pages", nothing)
+    tips = await gt.get_tips({"id": 9, "name": "Obscure Game"}, "")
+    assert tips == {"wikipedia": None, "categories": []}
     assert not list(tmp_path.iterdir())
-    assert asyncio.iscoroutinefunction(gt.get_tips)

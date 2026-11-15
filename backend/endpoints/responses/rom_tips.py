@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel
 
 
@@ -13,26 +15,31 @@ class WikipediaTipsSchema(BaseModel):
     sections: list[TipSectionSchema]
 
 
-class CheatEntrySchema(BaseModel):
-    description: str
-    code: str
+class TipBlockSchema(BaseModel):
+    """One piece of a guide page: a heading, a paragraph, a list or a table."""
+
+    type: Literal["heading", "paragraph", "list", "table"]
+    text: str | None = None
+    items: list[str] | None = None
+    headers: list[str] | None = None
+    rows: list[list[str]] | None = None
 
 
-class CheatGroupSchema(BaseModel):
-    """Cheat codes for one device (GameShark, Game Genie, ...)."""
-
-    device: str
-    entries: list[CheatEntrySchema]
-
-
-class GuideTipsSchema(BaseModel):
+class TipPageSchema(BaseModel):
     title: str
-    pages: list[TipSectionSchema]
+    source: str
+    blocks: list[TipBlockSchema]
+
+
+class TipCategorySchema(BaseModel):
+    """Guide pages of one kind: basics, guide, items, enemies or data."""
+
+    id: Literal["basics", "guide", "items", "enemies", "data"]
+    pages: list[TipPageSchema]
 
 
 class RomTipsSchema(BaseModel):
-    """What the open sources say about a game: overview, cheats and guide pages."""
+    """What the open sources say about a game: an overview plus guide pages."""
 
     wikipedia: WikipediaTipsSchema | None
-    cheats: list[CheatGroupSchema]
-    guide: GuideTipsSchema | None
+    categories: list[TipCategorySchema]

@@ -1,12 +1,13 @@
-"""Tips for a game, gathered from open sources and cached on disk.
+"""A game guide built from open wikis, cached on disk and shown inside RomM.
 
-* Wikipedia: the summary and the gameplay/story sections, in the UI language.
-* libretro-database: cheat codes (GameShark, Game Genie, ...) with descriptions.
-* StrategyWiki: guide pages (controls, characters, levels...).
+* Wikipedia: summary plus gameplay/story sections, in the UI language.
+* StrategyWiki and the game's Fandom wiki: guide pages (walkthrough, items,
+  enemies and bosses, data lists such as card passwords, basics).
 
-Everything is fetched as plain text and shown inside RomM; nothing remote is
-served as HTML. Descriptions and guide text that arrive in English are
-translated to the UI language and cached, like the achievement texts.
+Pages come through the MediaWiki API as HTML and are reduced to plain blocks
+(headings, paragraphs, lists, tables); nothing remote is ever served as HTML.
+Text that arrives in English is translated to the UI language and cached,
+within a per-game character budget so the DeepL quota lasts.
 """
 
 from __future__ import annotations
@@ -16,9 +17,10 @@ import json
 import re
 import time
 import unicodedata
+from html import unescape
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from config import ROMM_BASE_PATH
 from handler.metadata.achievement_translation import translate_now
@@ -28,59 +30,71 @@ from utils.context import ctx_httpx_client
 CACHE_DIR = Path(ROMM_BASE_PATH) / "config" / "game-tips"
 CACHE_TTL = 30 * 86400
 _HEADERS = {"User-Agent": "RomM-tips/1.0 (self-hosted game library)"}
-_TIMEOUT = 15
+_TIMEOUT = 20
 
 _MAX_SUMMARY = 1000
-_MAX_SECTION = 1800
-_MAX_GUIDE_PAGES = 12
-_MAX_GUIDE_TEXT = 1200
-_MAX_CHEATS = 300
-_MAX_TRANSLATED_CHEATS = 200
+_MAX_WIKI_SECTION = 1800
+_MAX_PAGE_CHARS = 6000  # prose per page
+_MAX_TABLE_ROWS = 800
+_MAX_CELL = 160
+_MAX_TRANSLATE_CHARS = 30000  # per game, to protect the translation quota
+_CATEGORY_CAPS = {"guide": 14, "items": 8, "enemies": 8, "data": 6, "basics": 6}
+CATEGORY_ORDER = ("basics", "guide", "items", "enemies", "data")
 
-# RomM platform fs_slug -> folder under libretro-database/cht
-CHEAT_DIRS: dict[str, str] = {
-    "nes": "Nintendo - Nintendo Entertainment System",
-    "famicom": "Nintendo - Nintendo Entertainment System",
-    "snes": "Nintendo - Super Nintendo Entertainment System",
-    "sfam": "Nintendo - Super Nintendo Entertainment System",
-    "gb": "Nintendo - Game Boy",
-    "gbc": "Nintendo - Game Boy Color",
-    "gba": "Nintendo - Game Boy Advance",
-    "n64": "Nintendo - Nintendo 64",
-    "nds": "Nintendo - Nintendo DS",
-    "psx": "Sony - PlayStation",
-    "psp": "Sony - PlayStation Portable",
-    "genesis": "Sega - Mega Drive - Genesis",
-    "megadrive": "Sega - Mega Drive - Genesis",
-    "sms": "Sega - Master System - Mark III",
-    "gamegear": "Sega - Game Gear",
-    "saturn": "Sega - Saturn",
-    "segacd": "Sega - Mega-CD - Sega CD",
-    "tg16": "NEC - PC Engine - TurboGrafx 16",
-}
-_DEVICES = (
-    "Code Breaker",
-    "GameShark",
-    "Game Genie",
-    "Action Replay",
-    "Game Buster",
-    "Pro Action Replay",
-    "Cheat Device",
+# Franchise words in a game name -> Fandom wiki subdomain.
+_FANDOM_ALIASES = {
+    "yu-gi-oh": "yugioh", "crash": "crashbandicoot", "zelda": "zelda",
+    "castlevania": "castlevania", "metroid": "metroid", "sonic": "sonic",
+    "kirby": "kirby", "mega man": "megaman", "resident evil": "residentevil",
+    "silent hill": "silenthill", "final fantasy": "finalfantasy",
+    "dragon quest": "dragonquest", "persona": "megamitensei",
+    "digimon": "digimon", "pokemon": "pokemon", "pokémon": "pokemon",
+    "star fox": "starfox", "donkey kong": "donkeykong",
+    "fire emblem": "fireemblem", "advance wars": "advancewars",
+    "street fighter": "streetfighter", "tekken": "tekken", "spyro": "spyro",
+    "gran turismo": "granturismo", "bloody roar": "bloodyroar",
+    "guitar hero": "guitarhero", "animal crossing": "animalcrossing",
+    "pac-man": "pacman", "ms. pac-man": "pacman", "tetris": "tetris",
+    "alex kidd": "alexkidd", "mario": "mario", "gravity rush": "gravityrush",
+    "rayman": "rayman", "fez": "fez", "grim fandango": "grimfandango",
+    "plants vs": "plantsvszombies", "dragon ball": "dragonball",
+}  # fmt: skip
+
+_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("data", ("card list", "list of", "passwords", "password", "fusion", "recipes",
+              "drop list", "drops", "codes")),
+    ("enemies", ("enemies", "enemy", "bestiary", "boss", "monster", "opponent", "duelist",
+                 "characters", "creatures", "foes")),
+    ("items", ("item", "weapon", "equipment", "armor", "armour", "shop", "store",
+               "collectible", "treasure", "loot", "rare", "relic", "accessor",
+               "inventory", "kinstone", "heart piece", "spell")),
+    ("basics", ("controls", "gameplay", "basics", "mechanics", "tips", "tricks",
+                "strateg", "secrets", "hidden", "modes", "getting started",
+                "difficulty", "unlock", "achievements", "trophies")),
+]  # fmt: skip
+_SKIP_TITLES = re.compile(
+    r"gallery|trailer|promotional|soundtrack|music|staff|credits|references|"
+    r"table of contents|template|category|talk:|user:|file:",
+    re.IGNORECASE,
 )
-_REGIONS = ("USA", "Europe", "Japan", "World")
-_CHT_BASE = "https://raw.githubusercontent.com/libretro/libretro-database/master/cht/"
 
 _WIKI_SECTIONS = re.compile(
     r"gameplay|jugabilidad|sistema de juego|modo de juego|mec[aá]nica|"
-    r"historia|argumento|trama|premisa|story|plot|spieler|jouabilit|"
-    r"sinopsis|synopsis",
+    r"historia|argumento|trama|premisa|story|plot|sinopsis|synopsis",
     re.IGNORECASE,
 )
+
+
+# --- text helpers --------------------------------------------------------------
 
 
 def _norm(text: str) -> str:
     text = unicodedata.normalize("NFKD", text).casefold()
     return re.sub(r"[^a-z0-9]+", "", "".join(c for c in text if not unicodedata.combining(c)))
+
+
+def _strip_parens(title: str) -> str:
+    return re.sub(r"\s*\(.*?\)\s*", " ", title).strip()
 
 
 def _name_variants(name: str) -> list[str]:
@@ -93,42 +107,265 @@ def _name_variants(name: str) -> list[str]:
     return variants
 
 
-def _strip_parens(title: str) -> str:
-    return re.sub(r"\s*\(.*?\)\s*", " ", title).strip()
+def _clip(text: str, limit: int) -> str:
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if len(text) <= limit:
+        return text
+    return text[:limit].rsplit(" ", 1)[0].rstrip(" ,;:.") + "…"
 
 
-async def _get(url: str, params: dict[str, Any] | None = None) -> Any | None:
+def _clean(text: str) -> str:
+    text = unescape(text).replace("\xa0", " ")
+    text = re.sub(r"\[(?:edit|\d+|citation needed)\]", "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def category_of(title: str) -> str:
+    lowered = title.lower()
+    for category, words in _CATEGORY_KEYWORDS:
+        if any(word in lowered for word in words):
+            return category
+    return "guide"
+
+
+# --- HTML -> blocks ------------------------------------------------------------
+
+_VOID = {"br", "hr", "img", "input", "meta", "link", "area", "base", "col", "wbr"}
+_SKIP_TAGS = {"script", "style", "sup", "figure", "nav", "noscript", "button", "form", "svg", "aside"}
+_SKIP_CLASSES = {
+    "toc", "navbox", "infobox", "portable-infobox", "mw-editsection", "reference",
+    "references", "reflist", "thumb", "gallery", "noprint", "hatnote", "mbox",
+    "ambox", "metadata", "navigation-not-searchable", "mw-empty-elt", "printfooter",
+    "catlinks", "wikia-gallery", "navbar", "toccolours", "sidebar",
+}  # fmt: skip
+_BLOCK_TEXT = {"p", "dd", "dt", "blockquote"}
+
+
+class _BlockParser(HTMLParser):
+    def __init__(self, max_chars: int, max_rows: int) -> None:
+        super().__init__(convert_charrefs=True)
+        self.blocks: list[dict[str, Any]] = []
+        self.max_chars = max_chars
+        self.max_rows = max_rows
+        self.chars = 0
+        self.stack: list[tuple[str, bool]] = []
+        self.skip = 0
+        self.buf: list[str] = []
+        self.kind = "paragraph"
+        self.list_items: list[str] | None = None
+        self.in_li = False
+        self.table: list[list[str]] | None = None
+        self.row: list[str] | None = None
+        self.cell: list[str] | None = None
+        self.table_depth = 0
+
+    # -- helpers
+    def _flush_text(self) -> None:
+        text = _clean("".join(self.buf))
+        self.buf = []
+        if not text:
+            return
+        if self.kind == "heading":
+            self.blocks.append({"type": "heading", "text": text})
+        elif self.in_li and self.list_items is not None:
+            self.list_items.append(text)
+        elif self.chars < self.max_chars and len(text) > 1:
+            self.blocks.append({"type": "paragraph", "text": text})
+            self.chars += len(text)
+        self.kind = "paragraph"
+
+    def _flush_list(self) -> None:
+        if self.list_items:
+            items = [i for i in self.list_items if i][:60]
+            if items and self.chars < self.max_chars:
+                self.blocks.append({"type": "list", "items": items})
+                self.chars += sum(len(i) for i in items)
+        self.list_items = None
+
+    @staticmethod
+    def _classes(attrs: list[tuple[str, str | None]]) -> set[str]:
+        for key, value in attrs:
+            if key == "class" and value:
+                return set(value.split())
+        return set()
+
+    # -- parser hooks
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _VOID:
+            if tag == "br" and not self.skip:
+                self.buf.append(" ")
+            return
+        classes = self._classes(attrs)
+        style = next((v or "" for k, v in attrs if k == "style"), "")
+        element_id = next((v or "" for k, v in attrs if k == "id"), "")
+        skip_here = (
+            tag in _SKIP_TAGS
+            or bool(classes & _SKIP_CLASSES)
+            or element_id == "toc"
+            or "display:none" in style.replace(" ", "")
+        )
+        if tag == "table" and self.table is not None:
+            skip_here = True  # nested table
+        self.stack.append((tag, skip_here))
+        if skip_here:
+            self.skip += 1
+            return
+        if self.skip:
+            return
+        if tag == "table":
+            self._flush_text()
+            self._flush_list()
+            self.table, self.table_depth = [], len(self.stack)
+        elif tag == "tr" and self.table is not None:
+            self.row = []
+        elif tag in ("td", "th") and self.row is not None:
+            self.cell = []
+        elif self.table is not None:
+            return
+        elif re.fullmatch(r"h[2-6]", tag):
+            self._flush_text()
+            self._flush_list()
+            self.kind = "heading"
+        elif tag in ("ul", "ol"):
+            self._flush_text()
+            if self.list_items is None:
+                self.list_items = []
+        elif tag == "li":
+            self._flush_text()
+            self.in_li = True
+        elif tag in _BLOCK_TEXT or tag == "div":
+            self._flush_text()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in _VOID or not any(t == tag for t, _ in self.stack):
+            return
+        while self.stack:
+            top, skipped = self.stack.pop()
+            if skipped:
+                self.skip -= 1
+            if top == tag:
+                break
+            # an unclosed child: treat it as closed
+        if self.skip:
+            return
+        if tag in ("td", "th") and self.cell is not None and self.row is not None:
+            self.row.append(_clip(_clean("".join(self.cell)), _MAX_CELL))
+            self.cell = None
+        elif tag == "tr" and self.row is not None and self.table is not None:
+            if any(self.row) and len(self.table) <= self.max_rows:
+                self.table.append(self.row)
+            self.row = None
+        elif tag == "table" and self.table is not None and len(self.stack) < self.table_depth:
+            self._emit_table()
+        elif self.table is not None:
+            return
+        elif re.fullmatch(r"h[2-6]", tag):
+            self._flush_text()
+        elif tag == "li":
+            self._flush_text()
+            self.in_li = False
+        elif tag in ("ul", "ol"):
+            self._flush_list()
+        elif tag in _BLOCK_TEXT or tag == "div":
+            self._flush_text()
+
+    def handle_data(self, data: str) -> None:
+        if self.skip:
+            return
+        if self.cell is not None:
+            self.cell.append(data)
+        elif self.table is None:
+            self.buf.append(data)
+
+    def _emit_table(self) -> None:
+        rows = self.table or []
+        self.table = None
+        if len(rows) < 2:
+            return
+        width = max(len(r) for r in rows)
+        if width < 2 or width > 12:
+            return
+        rows = [r + [""] * (width - len(r)) for r in rows]
+        self.blocks.append({"type": "table", "headers": rows[0], "rows": rows[1:]})
+
+    def close(self) -> None:
+        super().close()
+        self._flush_text()
+        self._flush_list()
+
+
+def html_to_blocks(html: str, max_chars: int = _MAX_PAGE_CHARS, max_rows: int = _MAX_TABLE_ROWS) -> list[dict[str, Any]]:
+    parser = _BlockParser(max_chars, max_rows)
+    try:
+        parser.feed(html)
+        parser.close()
+    except Exception:
+        log.warning("Could not parse a wiki page")
+    blocks = parser.blocks
+    # a heading with nothing under it adds noise
+    cleaned: list[dict[str, Any]] = []
+    for index, block in enumerate(blocks):
+        if block["type"] == "heading":
+            following = blocks[index + 1] if index + 1 < len(blocks) else None
+            if following is None or following["type"] == "heading":
+                continue
+        cleaned.append(block)
+    return cleaned
+
+
+# --- HTTP ----------------------------------------------------------------------
+
+
+def _api(host: str) -> str:
+    """Fandom serves the API at the root; the other MediaWiki sites under /w/."""
+    return f"https://{host}/api.php" if host.endswith(".fandom.com") else f"https://{host}/w/api.php"
+
+
+
+async def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any] | None:
     try:
         response = await ctx_httpx_client.get().get(
             url, params=params, headers=_HEADERS, timeout=_TIMEOUT
         )
         if response.status_code != 200:
             return None
-        return response
-    except Exception:
-        return None
-
-
-async def _get_json(url: str, params: dict[str, Any]) -> dict[str, Any] | None:
-    response = await _get(url, params)
-    if response is None:
-        return None
-    try:
         data = response.json()
-    except ValueError:
+    except Exception:
         return None
     return data if isinstance(data, dict) else None
 
 
-def _clip(text: str, limit: int) -> str:
-    text = re.sub(r"\n{3,}", "\n\n", text).strip()
-    if len(text) <= limit:
-        return text
-    cut = text[:limit].rsplit(" ", 1)[0]
-    return cut.rstrip(" ,;:.") + "…"
+async def _parse_page(host: str, title: str) -> str | None:
+    data = await _get_json(
+        _api(host),
+        {"action": "parse", "page": title, "prop": "text", "redirects": 1,
+         "disableeditsection": 1, "format": "json"},
+    )  # fmt: skip
+    text = ((data or {}).get("parse") or {}).get("text")
+    if isinstance(text, dict):
+        text = text.get("*")
+    return text if isinstance(text, str) else None
 
 
-# --- Wikipedia ---------------------------------------------------------------
+async def _titles_with_prefix(host: str, prefix: str, limit: int = 100) -> list[str]:
+    data = await _get_json(
+        _api(host),
+        {"action": "query", "list": "allpages", "apprefix": prefix, "aplimit": limit,
+         "apnamespace": 0, "format": "json"},
+    )  # fmt: skip
+    return [p["title"] for p in ((data or {}).get("query") or {}).get("allpages", [])]
+
+
+async def _search_titles(host: str, query: str, limit: int = 8) -> list[str]:
+    data = await _get_json(
+        _api(host),
+        {"action": "query", "list": "search", "srsearch": query, "srlimit": limit,
+         "srnamespace": 0, "format": "json"},
+    )  # fmt: skip
+    return [r["title"] for r in ((data or {}).get("query") or {}).get("search", [])]
+
+
+# --- Wikipedia -----------------------------------------------------------------
 
 
 def _wiki_sections(extract: str) -> tuple[str, list[dict[str, str]]]:
@@ -138,159 +375,215 @@ def _wiki_sections(extract: str) -> tuple[str, list[dict[str, str]]]:
     for title, body in zip(parts[1::2], parts[2::2]):
         body = re.sub(r"\n==+ .+? ==+\n", "\n", body).strip()
         if _WIKI_SECTIONS.search(title) and len(body) > 80:
-            sections.append({"title": title.strip(), "text": _clip(body, _MAX_SECTION)})
+            sections.append({"title": title.strip(), "text": _clip(body, _MAX_WIKI_SECTION)})
     return summary, sections
 
 
 async def _wikipedia(name: str, language: str) -> dict[str, Any] | None:
-    api = f"https://{language}.wikipedia.org/w/api.php"
-    found = await _get_json(
-        api,
-        {"action": "query", "list": "search", "srsearch": name, "srlimit": 6, "format": "json"},
-    )
-    titles = [r["title"] for r in (found or {}).get("query", {}).get("search", [])]
+    host = f"{language}.wikipedia.org"
+    titles = await _search_titles(host, name, 6)
     wanted = _norm(name)
     title = next((t for t in titles if _norm(_strip_parens(t)) == wanted), None)
     if title is None:
         return None
-    page = await _get_json(
-        api,
-        {
-            "action": "query",
-            "prop": "extracts",
-            "explaintext": 1,
-            "redirects": 1,
-            "titles": title,
-            "format": "json",
-        },
-    )
-    pages = list(((page or {}).get("query") or {}).get("pages", {}).values())
+    data = await _get_json(
+        _api(host),
+        {"action": "query", "prop": "extracts", "explaintext": 1, "redirects": 1,
+         "titles": title, "format": "json"},
+    )  # fmt: skip
+    pages = list(((data or {}).get("query") or {}).get("pages", {}).values())
     extract = pages[0].get("extract", "") if pages else ""
     if len(extract) < 120:
         return None
     summary, sections = _wiki_sections(extract)
-    return {
-        "title": title,
-        "language": language,
-        "summary": _clip(summary, _MAX_SUMMARY),
-        "sections": sections,
-    }
+    return {"title": title, "language": language, "summary": _clip(summary, _MAX_SUMMARY), "sections": sections}
 
 
-# --- libretro cheats ---------------------------------------------------------
-
-_CHEAT_DESC = re.compile(r'^cheat(\d+)_desc\s*=\s*"(.*)"\s*$', re.MULTILINE)
-_CHEAT_CODE = re.compile(r'^cheat(\d+)_code\s*=\s*"(.*)"\s*$', re.MULTILINE)
+# --- wiki guides ----------------------------------------------------------------
 
 
-def parse_cht(text: str) -> list[dict[str, str]]:
-    codes = {int(i): c for i, c in _CHEAT_CODE.findall(text)}
-    entries = []
-    for index, desc in sorted((int(i), d) for i, d in _CHEAT_DESC.findall(text)):
-        code = codes.get(index, "").strip()
-        if desc.strip() and code:
-            entries.append({"description": desc.strip(), "code": code})
-    return entries
+def _wiki_candidates(name: str) -> list[str]:
+    """Fandom subdomains worth trying for this game."""
+    lowered = name.lower()
+    hosts: list[str] = []
+    for key, slug in _FANDOM_ALIASES.items():
+        if key in lowered and slug not in hosts:
+            hosts.append(slug)
+    return hosts[:2]
 
 
-def _cht_candidates(rom: dict[str, Any]) -> list[tuple[str, str]]:
-    """(device, file name) pairs to try, following No-Intro naming."""
-    bases = []
-    for base in (rom.get("fs_name_no_ext"), rom.get("fs_name_no_tags")):
-        if base and base not in bases:
-            bases.append(base)
-    names: list[str] = []
-    for base in bases:
-        if "(" in base:
-            names.append(base)
-        else:
-            names.extend(f"{base} ({region})" for region in _REGIONS)
-    out = []
-    for name in names:
-        for device in _DEVICES:
-            out.append((device, f"{name} ({device}).cht"))
-        out.append(("", f"{name}.cht"))
+async def _is_wiki(host: str) -> bool:
+    data = await _get_json(
+        f"https://{host}/api.php", {"action": "query", "meta": "siteinfo", "format": "json"}
+    )
+    return bool(data and data.get("query"))
+
+
+async def _candidate_pages(host: str, label: str, name: str) -> list[tuple[str, str, str]]:
+    """(host, title, source label) of pages about ``name`` on one wiki."""
+    wanted = _norm(name)
+    titles: list[str] = []
+    fandom = host.endswith(".fandom.com")
+    multiword = len(name.split()) >= 2
+    # "Game/Subpage" is always the game's own. ": " and " " prefixes and free
+    # text search also catch sibling games, so only a multi-word name is safe.
+    titles.extend(await _titles_with_prefix(host, name + "/"))
+    if fandom and multiword:
+        titles.extend(await _titles_with_prefix(host, name + ":"))
+        titles.extend(await _titles_with_prefix(host, name + " "))
+        for query in (name, f"{name} items", f"{name} enemies bosses", f"{name} guide walkthrough"):
+            titles.extend(await _search_titles(host, query))
+    chosen: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for title in titles:
+        key = _norm(title)
+        if key in seen or _SKIP_TITLES.search(title):
+            continue
+        # Subpages of the game, or pages whose title carries the game's name.
+        if wanted not in key and wanted not in _norm(title.split("/")[0]):
+            continue
+        if key == wanted:
+            continue  # the game's own page is the overview, not a guide page
+        seen.add(key)
+        chosen.append((host, title, label))
+    return chosen
+
+
+def _display_title(title: str, name: str) -> str:
+    """Drop the game's name prefix so tabs read "Controls", not "Game/Controls"."""
+    for variant in _name_variants(name):
+        for sep in ("/", ": ", " - "):
+            if title.lower().startswith((variant + sep).lower()):
+                return title[len(variant) + len(sep):].strip() or title
+    return title
+
+
+async def _collect_pages(name: str) -> dict[str, list[dict[str, Any]]]:
+    sources: list[tuple[str, str]] = [("strategywiki.org", "StrategyWiki")]
+    for slug in _wiki_candidates(name):
+        host = f"{slug}.fandom.com"
+        if await _is_wiki(host):
+            sources.append((host, "Fandom"))
+
+    candidates: list[tuple[str, str, str]] = []
+    for host, label in sources:
+        for variant in _name_variants(name):
+            found = await _candidate_pages(host, label, variant)
+            if found:
+                candidates.extend(found)
+                break
+
+    by_category: dict[str, list[tuple[str, str, str]]] = {c: [] for c in _CATEGORY_CAPS}
+    for host, title, label in candidates:
+        category = category_of(_display_title(title, name))
+        bucket = by_category[category]
+        if len(bucket) < _CATEGORY_CAPS[category]:
+            bucket.append((host, title, label))
+
+    semaphore = asyncio.Semaphore(6)
+
+    async def fetch(host: str, title: str, label: str) -> tuple[str, dict[str, Any] | None]:
+        async with semaphore:
+            html = await _parse_page(host, title)
+        if not html:
+            return title, None
+        blocks = html_to_blocks(html)
+        text_size = sum(len(b.get("text") or "") + sum(len(i) for i in b.get("items") or []) for b in blocks)
+        has_table = any(b["type"] == "table" for b in blocks)
+        if text_size < 200 and not has_table:
+            return title, None
+        return title, {"title": _display_title(title, name), "source": label, "blocks": blocks}
+
+    jobs: list[tuple[str, Any]] = []
+    for category, items in by_category.items():
+        for host, title, label in items:
+            jobs.append((category, fetch(host, title, label)))
+    results = await asyncio.gather(*(job for _, job in jobs))
+    out: dict[str, list[dict[str, Any]]] = {c: [] for c in _CATEGORY_CAPS}
+    seen: set[Any] = set()
+    for (category, _), (_, page) in zip(jobs, results):
+        if not page:
+            continue
+        signature = _signature(page)
+        if signature in seen:  # the same list reached through several pages
+            continue
+        seen.add(signature)
+        out[category].append(page)
     return out
 
 
-async def _cheats(rom: dict[str, Any]) -> list[dict[str, Any]]:
-    folder = CHEAT_DIRS.get(rom.get("platform_fs_slug") or "")
-    if not folder:
-        return []
-    semaphore = asyncio.Semaphore(8)
-
-    async def fetch(device: str, filename: str):
-        async with semaphore:
-            response = await _get(_CHT_BASE + quote(folder) + "/" + quote(filename))
-        return device, (response.text if response is not None else None)
-
-    candidates = _cht_candidates(rom)
-    results = await asyncio.gather(*(fetch(d, f) for d, f in candidates))
-    groups: list[dict[str, Any]] = []
-    seen: set[tuple[tuple[str, str], ...]] = set()
-    for (device, filename), (_, text) in zip(candidates, results):
-        if not text:
-            continue
-        entries = parse_cht(text)[:_MAX_CHEATS]
-        signature = tuple((e["description"], e["code"]) for e in entries)
-        if not entries or signature in seen:
-            continue
-        seen.add(signature)
-        tags = re.findall(r"\(([^)]*)\)", filename)
-        region = tags[0] if tags and tags[0] != device else ""
-        label = " · ".join(part for part in (device or "Cheats", region) if part)
-        groups.append({"device": label, "entries": entries})
-    return groups
+def _signature(page: dict[str, Any]) -> Any:
+    """Identifies a page by its biggest table, or by its opening text."""
+    tables = [b for b in page["blocks"] if b["type"] == "table"]
+    if tables:
+        biggest = max(tables, key=lambda b: len(b["rows"]))
+        return ("table", len(biggest["rows"]), tuple(map(tuple, biggest["rows"][:3])))
+    return ("text", page["title"], str(page["blocks"][:2]))
 
 
-# --- StrategyWiki ------------------------------------------------------------
-
-_SW_API = "https://strategywiki.org/w/api.php"
+# --- translation ----------------------------------------------------------------
 
 
-async def _strategywiki(name: str) -> dict[str, Any] | None:
-    found = await _get_json(
-        _SW_API,
-        {"action": "query", "list": "search", "srsearch": name, "srnamespace": 0, "srlimit": 6, "format": "json"},
-    )
-    titles = [r["title"] for r in (found or {}).get("query", {}).get("search", [])]
-    wanted = _norm(name)
-    title = next((t for t in titles if _norm(_strip_parens(t.split("/")[0])) == wanted), None)
-    if title is None:
-        return None
-    title = title.split("/")[0]
-    data = await _get_json(
-        _SW_API,
-        {
-            "action": "query",
-            "generator": "allpages",
-            "gapprefix": f"{title}/",
-            "gaplimit": 40,
-            "gapnamespace": 0,
-            "prop": "extracts",
-            "exintro": 1,
-            "explaintext": 1,
-            "exlimit": "max",
-            "format": "json",
-        },
-    )
-    pages = []
-    for page in ((data or {}).get("query") or {}).get("pages", {}).values():
-        text = (page.get("extract") or "").strip()
-        sub = page.get("title", "").split("/", 1)[-1]
-        if len(text) < 80 or sub.lower().startswith("table of contents"):
-            continue
-        pages.append({"index": page.get("index", 0), "title": sub, "text": _clip(text, _MAX_GUIDE_TEXT)})
-    pages.sort(key=lambda p: p["index"])
-    pages = [{"title": p["title"], "text": p["text"]} for p in pages[:_MAX_GUIDE_PAGES]]
-    return {"title": title, "pages": pages} if pages else None
+def _translatable(page: dict[str, Any]) -> list[str]:
+    texts = [page["title"]]
+    for block in page["blocks"]:
+        if block["type"] in ("heading", "paragraph"):
+            texts.append(block["text"])
+        elif block["type"] == "list":
+            texts.extend(block["items"])
+        elif block["type"] == "table":
+            texts.extend(h for h in block["headers"] if h)
+            texts.extend(
+                cell for row in block["rows"][:30] for cell in row if len(cell) > 40
+            )
+    return texts
 
 
-# --- orchestration -----------------------------------------------------------
+def _apply(page: dict[str, Any], done: dict[str, str]) -> None:
+    get = lambda s: done.get(s, s)  # noqa: E731
+    page["title"] = get(page["title"])
+    for block in page["blocks"]:
+        if block["type"] in ("heading", "paragraph"):
+            block["text"] = get(block["text"])
+        elif block["type"] == "list":
+            block["items"] = [get(i) for i in block["items"]]
+        elif block["type"] == "table":
+            block["headers"] = [get(h) for h in block["headers"]]
+            block["rows"] = [[get(c) if len(c) > 40 else c for c in row] for row in block["rows"]]
+
+
+async def _translate_tips(tips: dict[str, Any], lang: str) -> None:
+    if not lang:
+        return
+    pages = [p for cat in tips["categories"] for p in cat["pages"]]
+    texts: list[str] = []
+    budget = _MAX_TRANSLATE_CHARS
+    for page in pages:
+        for text in _translatable(page):
+            if budget <= 0:
+                break
+            texts.append(text)
+            budget -= len(text)
+    wiki = tips.get("wikipedia")
+    if wiki and wiki["language"] != lang:  # fell back to English
+        texts.extend((wiki["summary"], *(s["title"] for s in wiki["sections"]), *(s["text"] for s in wiki["sections"])))
+    if not texts:
+        return
+    done = await translate_now(texts, lang)
+    for page in pages:
+        _apply(page, done)
+    if wiki and wiki["language"] != lang:
+        wiki["summary"] = done.get(wiki["summary"], wiki["summary"])
+        for s in wiki["sections"]:
+            s["title"] = done.get(s["title"], s["title"])
+            s["text"] = done.get(s["text"], s["text"])
+
+
+# --- orchestration ---------------------------------------------------------------
 
 
 def _cache_file(rom_id: int, lang: str) -> Path:
-    return CACHE_DIR / f"{rom_id}-{lang or 'en'}.json"
+    return CACHE_DIR / f"{rom_id}-{lang or 'en'}-v2.json"
 
 
 def _read_cache(rom_id: int, lang: str) -> dict[str, Any] | None:
@@ -314,39 +607,8 @@ def _write_cache(rom_id: int, lang: str, tips: dict[str, Any]) -> None:
         log.exception("Could not cache game tips")
 
 
-async def _translate_tips(tips: dict[str, Any], lang: str) -> None:
-    """English cheat descriptions and guide text -> the UI language, in place."""
-    if not lang:
-        return
-    texts: list[str] = []
-    for group in tips["cheats"]:
-        texts.extend(e["description"] for e in group["entries"][:_MAX_TRANSLATED_CHEATS])
-    guide = tips.get("guide")
-    if guide:
-        for page in guide["pages"]:
-            texts.extend((page["title"], page["text"]))
-    wiki = tips.get("wikipedia")
-    if wiki and wiki["language"] != lang:  # fell back to English
-        texts.extend((wiki["summary"], *(s["title"] for s in wiki["sections"]), *(s["text"] for s in wiki["sections"])))
-    if not texts:
-        return
-    done = await translate_now(texts, lang)
-    for group in tips["cheats"]:
-        for entry in group["entries"][:_MAX_TRANSLATED_CHEATS]:
-            entry["description"] = done.get(entry["description"], entry["description"])
-    if guide:
-        for page in guide["pages"]:
-            page["title"] = done.get(page["title"], page["title"])
-            page["text"] = done.get(page["text"], page["text"])
-    if wiki and wiki["language"] != lang:
-        wiki["summary"] = done.get(wiki["summary"], wiki["summary"])
-        for s in wiki["sections"]:
-            s["title"] = done.get(s["title"], s["title"])
-            s["text"] = done.get(s["text"], s["text"])
-
-
 async def get_tips(rom: dict[str, Any], lang: str) -> dict[str, Any]:
-    """Tips for one ROM. ``lang`` is a translator code ("es"), or "" to keep English."""
+    """Guide for one ROM. ``lang`` is a translator code ("es"), or "" to keep English."""
     cached = _read_cache(rom["id"], lang)
     if cached is not None:
         return cached
@@ -362,17 +624,14 @@ async def get_tips(rom: dict[str, Any], lang: str) -> dict[str, Any]:
                     return result
         return None
 
-    async def strategy() -> dict[str, Any] | None:
-        for variant in _name_variants(name):
-            result = await _strategywiki(variant)
-            if result:
-                return result
-        return None
-
-    wikipedia, cheats, guide = await asyncio.gather(wiki(), _cheats(rom), strategy())
-    tips: dict[str, Any] = {"wikipedia": wikipedia, "cheats": cheats, "guide": guide}
+    wikipedia, pages = await asyncio.gather(wiki(), _collect_pages(name))
+    categories = [
+        {"id": category, "pages": pages[category]}
+        for category in CATEGORY_ORDER
+        if pages.get(category)
+    ]
+    tips: dict[str, Any] = {"wikipedia": wikipedia, "categories": categories}
     await _translate_tips(tips, lang)
-    # Nothing found is cached too, but only for a day: sources fill in over time.
-    if wikipedia or cheats or guide:
+    if wikipedia or categories:
         _write_cache(rom["id"], lang, tips)
     return tips
