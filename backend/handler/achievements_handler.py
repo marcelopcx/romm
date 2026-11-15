@@ -62,7 +62,12 @@ async def library_overview(
         ra_progression=progression,
         roms=visible,
     )
-    return _with_vita_trophies(overview, can_see_rom)
+    from config import ACHIEVEMENTS_LANGUAGE
+    from handler.metadata.achievement_translation import translate_overview
+
+    return translate_overview(
+        _with_vita_trophies(overview, can_see_rom), ACHIEVEMENTS_LANGUAGE
+    )
 
 
 def _with_vita_trophies(
