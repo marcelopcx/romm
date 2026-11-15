@@ -198,6 +198,30 @@ async def _fill(texts: list[str], lang: str) -> None:
         log.info(f"Translated {done} achievement texts to '{lang}'")
 
 
+async def translate_now(texts: list[str], lang: str) -> dict[str, str]:
+    """Translate ``texts`` before returning (cache first). Texts that fail stay as they are."""
+    cache = _load(lang)
+    need = [t for t in dict.fromkeys(texts) if t and t not in cache]
+    # Without DeepL the keyless endpoint is throttled, so only do a few per call.
+    batch = DEEPL_BATCH if _deepl_key() and _deepl_target(lang) else 1
+    limit = len(need) if batch > 1 else 25
+    need = need[:limit]
+    changed = False
+    for start in range(0, len(need), batch):
+        chunk = need[start : start + batch]
+        try:
+            results = await _translate_chunk(chunk, lang)
+        except Exception:
+            break
+        for text, translated in zip(chunk, results):
+            if translated:
+                cache[text] = translated
+                changed = True
+    if changed:
+        _save(lang)
+    return {t: cache.get(t, t) for t in texts}
+
+
 def _schedule(texts: set[str], lang: str) -> None:
     global _task
     if _task is not None and not _task.done():

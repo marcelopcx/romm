@@ -54,6 +54,7 @@ from decorators.auth import protected_route
 from endpoints.responses import BulkOperationResponse
 from endpoints.responses.base import PAGE_QUERY, LimitOffsetPage, PageParams
 from endpoints.responses.recommendation import SimilarRomSchema
+from endpoints.responses.rom_tips import RomTipsSchema
 from endpoints.responses.rom import (
     DetailedRomSchema,
     ManualMetadata,
@@ -1417,6 +1418,41 @@ def get_similar_roms(
         )
         for item in similar_roms(id, limit=limit, permissions=get_permissions(request))
     ]
+
+
+@protected_route(
+    router.get,
+    "/{id}/tips",
+    [Scope.ROMS_READ],
+    responses={status.HTTP_404_NOT_FOUND: {}},
+)
+async def get_rom_tips(
+    request: Request,
+    id: Annotated[int, PathVar(description="Rom internal id.", ge=1)],
+    lang: Annotated[
+        str | None,
+        Query(
+            max_length=10,
+            description="UI locale (e.g. `es_ES`). English sources are translated to it.",
+        ),
+    ] = None,
+) -> RomTipsSchema:
+    """Overview, cheat codes and guide pages for a game, from open sources."""
+    from handler.metadata.achievement_translation import target_language
+    from handler.metadata.game_tips import get_tips
+
+    rom = visible_rom_or_404(request, db_rom_handler.get_rom_simple(id), id)
+    tips = await get_tips(
+        {
+            "id": rom.id,
+            "name": rom.name,
+            "fs_name_no_ext": rom.fs_name_no_ext,
+            "fs_name_no_tags": rom.fs_name_no_tags,
+            "platform_fs_slug": rom.platform_fs_slug,
+        },
+        target_language(lang),
+    )
+    return RomTipsSchema.model_validate(tips)
 
 
 @protected_route(

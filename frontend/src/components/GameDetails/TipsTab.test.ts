@@ -1,51 +1,87 @@
-import { mount } from "@vue/test-utils";
-import { describe, expect, it, vi } from "vitest";
+import { flushPromises, mount } from "@vue/test-utils";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { RomTips } from "@/services/api/tips";
 import { detailedRomFixture } from "@/utils/rom.fixtures";
 import TipsTab from "./TipsTab.vue";
 
 vi.mock("vue-i18n");
 
-function hrefs(overrides = {}) {
-  const wrapper = mount(TipsTab, {
-    props: {
-      rom: detailedRomFixture({
-        id: 1,
-        name: "Yu-Gi-Oh! Forbidden Memories",
-        platform_display_name: "PlayStation",
-        ...overrides,
-      }),
+// A plain function, not vi.fn(): vitest's mock bookkeeping leaves a rejected
+// promise it observes unhandled, which fails the test that handles it fine.
+let respond: (id: number) => Promise<RomTips> = () => Promise.resolve(TIPS);
+const requested: number[] = [];
+vi.mock("@/services/api/tips", () => ({
+  getRomTips: (id: number) => {
+    requested.push(id);
+    return respond(id);
+  },
+}));
+
+const TIPS: RomTips = {
+  wikipedia: {
+    title: "Crash Team Racing",
+    language: "es",
+    summary: "Un juego de carreras.",
+    sections: [{ title: "Sistema de juego", text: "Se conduce con karts." }],
+  },
+  cheats: [
+    {
+      device: "GameShark",
+      entries: [
+        { description: "Vidas infinitas", code: "8001ABCD" },
+        { description: "Dinero máximo", code: "8001FFFF" },
+      ],
     },
+  ],
+  guide: { title: "CTR", pages: [{ title: "Controles", text: "Pulsa X." }] },
+};
+
+async function mountTab() {
+  const wrapper = mount(TipsTab, {
+    props: { rom: detailedRomFixture({ id: 7, name: "Crash Team Racing" }) },
     global: { stubs: { RIcon: true } },
   });
-  return wrapper.findAll("a").map((a) => a.attributes("href"));
+  await flushPromises();
+  return wrapper;
 }
 
 describe("TipsTab", () => {
-  it("links the game's name to Trucoteca, GameFAQs and the other sites", () => {
-    const links = hrefs();
-    expect(links[0]).toBe(
-      "https://trucoteca.com/?s=Yu-Gi-Oh!%20Forbidden%20Memories",
-    );
-    expect(
-      links.some((l) => l?.startsWith("https://gamefaqs.gamespot.com/")),
-    ).toBe(true);
-    expect(links).toHaveLength(5);
+  beforeEach(() => {
+    requested.length = 0;
+    respond = () => Promise.resolve(TIPS);
   });
 
-  it("opens every link safely in a new tab", () => {
-    const wrapper = mount(TipsTab, {
-      props: { rom: detailedRomFixture({ id: 1, name: "Tetris" }) },
-      global: { stubs: { RIcon: true } },
-    });
-    for (const a of wrapper.findAll("a")) {
-      expect(a.attributes("target")).toBe("_blank");
-      expect(a.attributes("rel")).toContain("noopener");
-    }
+  it("shows the overview, cheats and guide inside the page", async () => {
+    const wrapper = await mountTab();
+    expect(requested).toEqual([7]);
+    const text = wrapper.text();
+    expect(text).toContain("Un juego de carreras.");
+    expect(text).toContain("Se conduce con karts.");
+    expect(text).toContain("Vidas infinitas");
+    expect(wrapper.find("code").text()).toBe("8001ABCD");
+    expect(text).toContain("Controles");
+    // Everything is shown in place: no link takes the user elsewhere.
+    expect(wrapper.find("a").exists()).toBe(false);
   });
 
-  it("falls back to the file name when the game has no name", () => {
-    expect(hrefs({ name: null, fs_name_no_tags: "Some Game" })[0]).toBe(
-      "https://trucoteca.com/?s=Some%20Game",
-    );
+  it("filters the cheats by description", async () => {
+    const wrapper = await mountTab();
+    await wrapper.find("input").setValue("dinero");
+    const rows = wrapper.findAll(".tips-tab__cheat");
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text()).toContain("Dinero máximo");
+  });
+
+  it("says so when no source has anything for the game", async () => {
+    respond = () =>
+      Promise.resolve({ wikipedia: null, cheats: [], guide: null });
+    const wrapper = await mountTab();
+    expect(wrapper.text()).toContain("rom.tips-empty");
+  });
+
+  it("shows an error when the request fails", async () => {
+    respond = () => Promise.reject(new Error("boom"));
+    const wrapper = await mountTab();
+    expect(wrapper.text()).toContain("rom.tips-error");
   });
 });
