@@ -77,6 +77,15 @@ def test_falls_back_to_title_text_when_the_id_is_unknown():
     assert game["rom_id"] == 7
 
 
+def test_title_icon_overrides_the_cover_as_game_icon():
+    (game,) = build_vita_games(
+        [ROM], [_title(icon="vita-trophies/NPWR02124_00/favicon.jpg")]
+    )
+    assert game["cover_url"] == (
+        "/assets/romm/resources/vita-trophies/NPWR02124_00/favicon.jpg"
+    )
+
+
 def test_title_without_matching_rom_is_skipped():
     assert build_vita_games([ROM], [_title(title_id="PCSE99999", title="Otro")]) == []
 
