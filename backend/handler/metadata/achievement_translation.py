@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +21,17 @@ from logger.logger import log
 from utils.context import ctx_httpx_client
 
 TRANSLATE_URL = "https://translate.googleapis.com/translate_a/single"
+# DeepL is used when DEEPL_API_KEY is set (free keys end in ":fx"): official, batched,
+# and not throttled like the keyless Google endpoint.
+DEEPL_FREE_URL = "https://api-free.deepl.com/v2/translate"
+DEEPL_PRO_URL = "https://api.deepl.com/v2/translate"
+DEEPL_BATCH = 50
+_DEEPL_TARGETS = {
+    "bg": "BG", "cs": "CS", "de": "DE", "es": "ES", "fr": "FR", "hu": "HU",
+    "it": "IT", "ja": "JA", "ko": "KO", "pl": "PL", "pt": "PT-BR", "ro": "RO",
+    "ru": "RU", "sv": "SV", "tr": "TR", "zh": "ZH-HANS", "zh-cn": "ZH-HANS",
+    "zh-tw": "ZH-HANT",
+}  # fmt: skip
 CACHE_DIR = Path(ROMM_BASE_PATH) / "config"
 # Achievements with this id prefix already carry the console's own language.
 _SKIP_PREFIXES = ("vita-",)
@@ -80,6 +92,39 @@ def _save(lang: str) -> None:
         log.exception("Could not save achievement translations")
 
 
+def _deepl_key() -> str:
+    return os.environ.get("DEEPL_API_KEY", "").strip()
+
+
+def _deepl_target(lang: str) -> str | None:
+    return _DEEPL_TARGETS.get(lang.lower())
+
+
+async def _translate_deepl(texts: list[str], lang: str) -> list[str | None]:
+    """A batch through DeepL; results line up with ``texts``."""
+    key = _deepl_key()
+    response = await ctx_httpx_client.get().post(
+        DEEPL_FREE_URL if key.endswith(":fx") else DEEPL_PRO_URL,
+        headers={"Authorization": f"DeepL-Auth-Key {key}"},
+        json={
+            "text": texts,
+            "source_lang": "EN",
+            "target_lang": _deepl_target(lang),
+            "preserve_formatting": True,
+        },
+        timeout=30,
+    )
+    response.raise_for_status()
+    results = [(t.get("text") or "").strip() or None for t in response.json()["translations"]]
+    return results if len(results) == len(texts) else [None] * len(texts)
+
+
+async def _translate_chunk(chunk: list[str], lang: str) -> list[str | None]:
+    if _deepl_key() and _deepl_target(lang):
+        return await _translate_deepl(chunk, lang)
+    return [await _translate(text, lang) for text in chunk]
+
+
 async def _translate(text: str, lang: str) -> str | None:
     """One text through Google Translate; None when the request fails."""
     response = await ctx_httpx_client.get().get(
@@ -100,37 +145,53 @@ def _retryable(exc: Exception) -> bool:
     return True  # network trouble
 
 
+def _quota_exhausted(exc: Exception) -> bool:
+    """DeepL answers 456 once the monthly character quota is used up."""
+    return isinstance(exc, httpx2.HTTPStatusError) and exc.response.status_code == 456
+
+
 async def _fill(texts: list[str], lang: str) -> None:
     cache = _load(lang)
+    full_batch = DEEPL_BATCH if _deepl_key() and _deepl_target(lang) else 1
+    batch = full_batch
+    pending = [t for t in texts if t not in cache]
     done = 0
     failures = 0
     wait = _BACKOFF_START
-    for text in texts:
-        if text in cache:
-            continue
-        translated: str | None = None
-        while True:
-            try:
-                translated = await _translate(text, lang)
-                failures, wait = 0, _BACKOFF_START
+    index = 0
+    while index < len(pending):
+        chunk = pending[index : index + batch]
+        try:
+            results = await _translate_chunk(chunk, lang)
+            failures, wait = 0, _BACKOFF_START
+            batch = full_batch
+        except Exception as exc:
+            if _quota_exhausted(exc):
+                log.warning("DeepL monthly quota used up; translation paused")
                 break
-            except Exception as exc:
-                if not _retryable(exc):
-                    break  # skip this text, keep going
-                failures += 1
-                if failures >= _MAX_FAILURES:
-                    log.warning("Achievement translation paused; it will retry later")
-                    if done:
-                        _save(lang)
-                    return
-                log.warning(f"Achievement translation throttled; waiting {wait}s")
-                await asyncio.sleep(wait)
-                wait = min(wait * 2, 900)
-        if translated:
-            cache[text] = translated
-            done += 1
-            if done % _SAVE_EVERY == 0:
-                _save(lang)
+            if not _retryable(exc):
+                # A rejected request: retry the texts one by one so a single bad
+                # text does not block the rest.
+                if len(chunk) > 1:
+                    batch = 1
+                else:
+                    index += 1
+                continue
+            failures += 1
+            if failures >= _MAX_FAILURES:
+                log.warning("Achievement translation paused; it will retry later")
+                break
+            log.warning(f"Achievement translation throttled; waiting {wait}s")
+            await asyncio.sleep(wait)
+            wait = min(wait * 2, 900)
+            continue
+        for text, translated in zip(chunk, results):
+            if translated:
+                cache[text] = translated
+                done += 1
+        if done and done % _SAVE_EVERY < len(chunk):
+            _save(lang)
+        index += len(chunk)
         await asyncio.sleep(_PAUSE)
     if done:
         _save(lang)

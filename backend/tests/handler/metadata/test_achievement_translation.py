@@ -30,6 +30,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(tr, "_task", None)
     monkeypatch.setattr(tr, "_PAUSE", 0)
     monkeypatch.setattr(tr, "_BACKOFF_START", 0)
+    monkeypatch.delenv("DEEPL_API_KEY", raising=False)
     yield
 
 
@@ -101,6 +102,33 @@ async def test_throttling_is_waited_out_and_translation_resumes(
     await tr._task
     saved = json.loads((tmp_path / "achievement-translations-es.json").read_text())
     assert saved == {"Hello": "[es] Hello", "Win the game": "[es] Win the game"}
+
+
+@pytest.mark.asyncio
+async def test_deepl_translates_in_batches_when_a_key_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("DEEPL_API_KEY", "abc:fx")
+    seen: list[list[str]] = []
+
+    async def fake(texts: list[str], lang: str) -> list[str | None]:
+        seen.append(list(texts))
+        return [f"[deepl {lang}] {t}" for t in texts]
+
+    monkeypatch.setattr(tr, "_translate_deepl", fake)
+    tr.translate_overview(_overview(), "es")
+    assert tr._task is not None
+    await tr._task
+    assert len(seen) == 1 and sorted(seen[0]) == ["Hello", "Win the game"]
+    saved = json.loads((tmp_path / "achievement-translations-es.json").read_text())
+    assert saved["Hello"] == "[deepl es] Hello"
+
+
+def test_deepl_target_codes():
+    assert tr._deepl_target("es") == "ES"
+    assert tr._deepl_target("pt") == "PT-BR"
+    assert tr._deepl_target("zh-TW") == "ZH-HANT"
+    assert tr._deepl_target("xx") is None
 
 
 @pytest.mark.asyncio
