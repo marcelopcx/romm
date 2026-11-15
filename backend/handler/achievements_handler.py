@@ -34,7 +34,7 @@ async def _fill_achievement_media() -> None:
 
 
 async def library_overview(
-    user: Any, can_see_rom: Callable[[Any], bool]
+    user: Any, can_see_rom: Callable[[Any], bool], language: str | None = None
 ) -> dict[str, Any]:
     """Visible RetroAchievements progress from data already stored on each ROM."""
     from handler.database import db_rom_handler
@@ -62,11 +62,13 @@ async def library_overview(
         ra_progression=progression,
         roms=visible,
     )
-    from config import ACHIEVEMENTS_LANGUAGE
-    from handler.metadata.achievement_translation import translate_overview
+    from handler.metadata.achievement_translation import (
+        target_language,
+        translate_overview,
+    )
 
     return translate_overview(
-        _with_vita_trophies(overview, can_see_rom), ACHIEVEMENTS_LANGUAGE
+        _with_vita_trophies(overview, can_see_rom), target_language(language)
     )
 
 

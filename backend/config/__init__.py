@@ -139,10 +139,6 @@ STEAMGRIDDB_API_KEY: Final[str | None] = _get_env("STEAMGRIDDB_API_KEY")
 
 # RETROACHIEVEMENTS
 RETROACHIEVEMENTS_API_KEY: Final[str | None] = _get_env("RETROACHIEVEMENTS_API_KEY")
-# Language for achievement titles and descriptions (e.g. "es"). RetroAchievements
-# only publishes English, so other languages are machine-translated and cached.
-# Empty keeps the original text.
-ACHIEVEMENTS_LANGUAGE: Final[str] = (_get_env("ACHIEVEMENTS_LANGUAGE", "") or "").lower()
 REFRESH_RETROACHIEVEMENTS_CACHE_DAYS: Final[int] = safe_int(
     _get_env("REFRESH_RETROACHIEVEMENTS_CACHE_DAYS"), 30
 )

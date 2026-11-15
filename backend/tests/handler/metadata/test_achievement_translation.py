@@ -32,6 +32,24 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     yield
 
 
+@pytest.mark.parametrize(
+    ("locale", "expected"),
+    [
+        ("es_ES", "es"),
+        ("pt_BR", "pt"),
+        ("zh_TW", "zh-TW"),
+        ("fr-FR", "fr"),
+        ("en_US", ""),
+        ("en_GB", ""),
+        ("", ""),
+        (None, ""),
+        ("../../x", ""),
+    ],
+)
+def test_target_language_follows_the_ui_locale(locale: str | None, expected: str):
+    assert tr.target_language(locale) == expected
+
+
 def test_off_when_no_language_is_set():
     overview = _overview()
     assert tr.translate_overview(overview, "") is overview

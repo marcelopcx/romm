@@ -1,9 +1,9 @@
 """Machine translation of achievement texts, cached on disk.
 
-RetroAchievements publishes titles and descriptions in English only. When
-``ACHIEVEMENTS_LANGUAGE`` is set, texts already in the cache are swapped in right
-away; the rest are translated in the background (one text at a time, Google
-Translate's keyless endpoint) and show up on the next request.
+RetroAchievements publishes titles and descriptions in English only. The client
+sends its UI language; texts already in the cache are swapped in right away, the
+rest are translated in the background (one text at a time, Google Translate's
+keyless endpoint) and show up on the next request.
 """
 
 from __future__ import annotations
@@ -26,6 +26,21 @@ _PAUSE = 0.15  # seconds between requests, to stay polite with the free endpoint
 
 _caches: dict[str, dict[str, str]] = {}
 _task: asyncio.Task[None] | None = None
+
+
+# Locales whose region matters to the translator; everything else uses the base code.
+_KEEP_REGION = {"zh_cn": "zh-CN", "zh_tw": "zh-TW"}
+
+
+def target_language(locale: str | None) -> str:
+    """UI locale (``es_ES``) -> translator code (``es``); empty means keep the original."""
+    value = (locale or "").strip().replace("-", "_").lower()
+    if not value or not value[:2].isalpha() or len(value) > 10:
+        return ""
+    if value in _KEEP_REGION:
+        return _KEEP_REGION[value]
+    base = value.split("_")[0]
+    return "" if base == "en" else base
 
 
 def _cache_path(lang: str) -> Path:

@@ -14,12 +14,12 @@ export function useDetectedLanguage() {
   );
 }
 
-// Applies the stored language, or the browser's preferred one while none is
-// stored ("Auto"), following browser changes live.
+// Applies the stored language (Spanish until the user picks another), or the
+// browser's preferred one when set to Auto, following browser changes live.
 export function useBrowserLocale() {
   const languageStore = storeLanguage();
   const { languages } = storeToRefs(languageStore);
-  const storedLocale = useUserLocalStorage("settings.locale", "");
+  const storedLocale = useUserLocalStorage("settings.locale", "es_ES");
   const detectedLanguage = useDetectedLanguage();
 
   const language = computed(

@@ -8,7 +8,8 @@ import storeAuth from "@/stores/auth";
 
 export const UI_SETTINGS_KEYS = {
   // Language
-  locale: { key: "settings.locale", default: "" },
+  // This fork defaults to Spanish; "" still means Auto (follow the browser).
+  locale: { key: "settings.locale", default: "es_ES" },
 
   // Theme
   theme: { key: "settings.theme", default: "auto" },

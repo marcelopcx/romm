@@ -4,7 +4,7 @@ from typing import Annotated, Any, Final
 
 from fastapi import Body, Form, HTTPException
 from fastapi import Path as PathVar
-from fastapi import Request, status
+from fastapi import Query, Request, status
 from fastapi.responses import FileResponse
 
 from decorators.auth import protected_route
@@ -396,11 +396,20 @@ def get_current_user(request: Request) -> UserSchema | None:
     [Scope.ME_READ, Scope.ROMS_READ],
     summary="RetroAchievements progress",
 )
-async def get_earned_achievements(request: Request) -> EarnedAchievementsSchema:
+async def get_earned_achievements(
+    request: Request,
+    lang: Annotated[
+        str | None,
+        Query(
+            max_length=10,
+            description="UI locale (e.g. `es_ES`). Achievement texts are translated to it.",
+        ),
+    ] = None,
+) -> EarnedAchievementsSchema:
     """RetroAchievements progress for the games this user is allowed to see."""
     perms = get_permissions(request)
     return EarnedAchievementsSchema.model_validate(
-        await library_overview(request.user, perms.can_see_rom)
+        await library_overview(request.user, perms.can_see_rom, lang)
     )
 
 

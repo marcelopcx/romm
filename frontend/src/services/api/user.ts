@@ -1,5 +1,6 @@
 import { ref } from "vue";
 import api from "@/services/api";
+import storeLanguage from "@/stores/language";
 import type {
   AchievementGameSchema as AchievementGame,
   AchievementTypeCountsSchema as AchievementTypeCounts,
@@ -109,7 +110,10 @@ async function deleteUser(user: UserSchema) {
 }
 
 async function fetchEarnedAchievements() {
-  return api.get<EarnedAchievementsResponse>("/users/me/earned-achievements");
+  // The server translates achievement texts to the interface language.
+  return api.get<EarnedAchievementsResponse>("/users/me/earned-achievements", {
+    params: { lang: storeLanguage().selectedLanguage.value },
+  });
 }
 
 const earnedAchievementsLoading = ref(true);
