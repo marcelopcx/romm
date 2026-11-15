@@ -13,6 +13,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import httpx2
+
 from config import ROMM_BASE_PATH
 from logger.logger import log
 from utils.context import ctx_httpx_client
@@ -22,7 +24,9 @@ CACHE_DIR = Path(ROMM_BASE_PATH) / "config"
 # Achievements with this id prefix already carry the console's own language.
 _SKIP_PREFIXES = ("vita-",)
 _SAVE_EVERY = 25
-_PAUSE = 0.15  # seconds between requests, to stay polite with the free endpoint
+_PAUSE = 0.7  # seconds between requests: the free endpoint throttles bursts
+_BACKOFF_START = 60  # seconds to wait after a 429, doubled on each repeat (max 15 min)
+_MAX_FAILURES = 8  # consecutive throttled/failed requests before giving up for now
 
 _caches: dict[str, dict[str, str]] = {}
 _task: asyncio.Task[None] | None = None
@@ -89,17 +93,39 @@ async def _translate(text: str, lang: str) -> str | None:
     return translated.strip() or None
 
 
+def _retryable(exc: Exception) -> bool:
+    """Throttling and server errors are worth waiting for; a rejected text is skipped."""
+    if isinstance(exc, httpx2.HTTPStatusError):
+        return exc.response.status_code == 429 or exc.response.status_code >= 500
+    return True  # network trouble
+
+
 async def _fill(texts: list[str], lang: str) -> None:
     cache = _load(lang)
     done = 0
+    failures = 0
+    wait = _BACKOFF_START
     for text in texts:
         if text in cache:
             continue
-        try:
-            translated = await _translate(text, lang)
-        except Exception:
-            log.warning("Achievement translation stopped; it will retry later")
-            break
+        translated: str | None = None
+        while True:
+            try:
+                translated = await _translate(text, lang)
+                failures, wait = 0, _BACKOFF_START
+                break
+            except Exception as exc:
+                if not _retryable(exc):
+                    break  # skip this text, keep going
+                failures += 1
+                if failures >= _MAX_FAILURES:
+                    log.warning("Achievement translation paused; it will retry later")
+                    if done:
+                        _save(lang)
+                    return
+                log.warning(f"Achievement translation throttled; waiting {wait}s")
+                await asyncio.sleep(wait)
+                wait = min(wait * 2, 900)
         if translated:
             cache[text] = translated
             done += 1

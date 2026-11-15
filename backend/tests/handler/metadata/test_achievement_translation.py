@@ -29,6 +29,7 @@ def _isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(tr, "_caches", {})
     monkeypatch.setattr(tr, "_task", None)
     monkeypatch.setattr(tr, "_PAUSE", 0)
+    monkeypatch.setattr(tr, "_BACKOFF_START", 0)
     yield
 
 
@@ -80,6 +81,26 @@ async def test_missing_texts_are_translated_in_the_background(
     assert saved == {"Hello": "[es] Hello", "Win the game": "[es] Win the game"}
     first = tr.translate_overview(_overview(), "es")["games"][0]["achievements"][0]
     assert first["title"] == "[es] Hello"
+
+
+@pytest.mark.asyncio
+async def test_throttling_is_waited_out_and_translation_resumes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    calls = {"n": 0}
+
+    async def flaky(text: str, lang: str) -> str | None:
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            raise RuntimeError("429")  # network-style error: retryable
+        return f"[{lang}] {text}"
+
+    monkeypatch.setattr(tr, "_translate", flaky)
+    tr.translate_overview(_overview(), "es")
+    assert tr._task is not None
+    await tr._task
+    saved = json.loads((tmp_path / "achievement-translations-es.json").read_text())
+    assert saved == {"Hello": "[es] Hello", "Win the game": "[es] Win the game"}
 
 
 @pytest.mark.asyncio
