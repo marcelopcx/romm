@@ -95,3 +95,21 @@ def test_load_trophies_tolerates_missing_and_broken_files(tmp_path: Path):
     ok = tmp_path / "ok.json"
     ok.write_text(json.dumps({"titles": [_title()]}))
     assert len(load_trophies(ok)) == 1
+
+
+def test_extra_catalog_fills_titles_the_console_lacks(tmp_path: Path):
+    main = tmp_path / "main.json"
+    extra = tmp_path / "extra.json"
+    main.write_text(json.dumps({"titles": [_title()]}))
+    extra.write_text(
+        json.dumps(
+            {
+                "titles": [
+                    _title(npcommid="NPWR02457_00", title_id="PCSA00011"),
+                    _title(npcommid="DUP", title_id="PCSE00064"),
+                ]
+            }
+        )
+    )
+    ids = [t["title_id"] for t in load_trophies(main, extra)]
+    assert ids == ["PCSE00064", "PCSA00011"]

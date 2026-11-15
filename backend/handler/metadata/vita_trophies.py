@@ -29,6 +29,8 @@ from handler.metadata.earned_achievements import (
 from logger.logger import log
 
 TROPHIES_FILE = Path(ROMM_BASE_PATH) / "config" / "vita-trophies.json"
+# Hand-made catalogs for games the console has no trophy data for (all locked).
+EXTRA_TROPHIES_FILE = Path(ROMM_BASE_PATH) / "config" / "vita-trophies-extra.json"
 
 _TITLE_ID = re.compile(r"\[(PCS[A-Z]\d{5})\]")
 # PSN grade -> (label, points). The points mirror the PSN trophy values.
@@ -46,8 +48,7 @@ def _norm(name: object) -> str:
     return re.sub(r"[^a-z0-9]+", "", (_text(name) or "").casefold())
 
 
-def load_trophies(path: Path = TROPHIES_FILE) -> list[dict[str, Any]]:
-    """Titles from the sync file; empty when it is missing or unreadable."""
+def _read_titles(path: Path) -> list[dict[str, Any]]:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -57,6 +58,18 @@ def load_trophies(path: Path = TROPHIES_FILE) -> list[dict[str, Any]]:
         return []
     titles = data.get("titles") if isinstance(data, dict) else None
     return [t for t in titles if isinstance(t, dict)] if isinstance(titles, list) else []
+
+
+def load_trophies(
+    path: Path = TROPHIES_FILE, extra_path: Path = EXTRA_TROPHIES_FILE
+) -> list[dict[str, Any]]:
+    """Console trophies first, then extra catalogs for titles the console lacks."""
+    titles = _read_titles(path)
+    known = {_text(t.get("title_id")) for t in titles} - {None}
+    for extra in _read_titles(extra_path):
+        if _text(extra.get("title_id")) not in known:
+            titles.append(extra)
+    return titles
 
 
 def _earned_at(value: object) -> str | None:
