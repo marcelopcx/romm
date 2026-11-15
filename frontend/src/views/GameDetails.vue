@@ -21,6 +21,7 @@ import OverviewTab from "@/components/GameDetails/OverviewTab.vue";
 import PatcherTab from "@/components/GameDetails/PatcherTab.vue";
 import PrevNextNav from "@/components/GameDetails/PrevNextNav.vue";
 import SaveDataTab from "@/components/GameDetails/SaveDataTab.vue";
+import TipsTab from "@/components/GameDetails/TipsTab.vue";
 import { useBackgroundArt } from "@/composables/useBackgroundArt";
 import { useBreakpoint } from "@/composables/useBreakpoint";
 import { useIsAlive } from "@/composables/useIsAlive";
@@ -338,6 +339,7 @@ const tabs = computed<RTabNavItem[]>(() => [
         },
       ]
     : []),
+  { id: "tips", label: t("rom.tab-tips") },
   {
     id: "save-data",
     label: t("rom.save-data"),
@@ -410,6 +412,7 @@ const activeTab = computed({
             :earned-achievement-ids="earnedAchievementIds"
             :background-url="resolvedCover"
           />
+          <TipsTab v-if="activeTab === 'tips'" :rom="currentRom" />
           <SaveDataTab v-if="activeTab === 'save-data'" :rom="currentRom" />
           <PatcherTab v-if="activeTab === 'patcher'" :rom="currentRom" />
           <MetadataTab v-if="activeTab === 'metadata'" :rom="currentRom" />
