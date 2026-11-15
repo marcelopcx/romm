@@ -56,6 +56,7 @@ def _title(**over):
 def test_matches_rom_by_title_id_and_counts_points():
     (game,) = build_vita_games([ROM], [_title()])
     assert game["rom_id"] == 7
+    assert game["cover_url"] == "https://example.test/cover.png"
     assert (game["earned"], game["total"]) == (1, 2)
     assert (game["points_earned"], game["points_total"]) == (15, 195)
     first, second = game["achievements"]

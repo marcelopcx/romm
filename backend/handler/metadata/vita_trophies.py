@@ -152,7 +152,8 @@ def build_vita_games(
                 "platform_name": rom.get("platform_name"),
                 "platform_slug": _text(rom.get("platform_slug")),
                 "platform_fs_slug": _text(rom.get("platform_fs_slug")),
-                "cover_url": None,
+                # The small mark beside the title: Vita has no ImageIcon, so use the cover.
+                "cover_url": small or large or remote,
                 "path_cover_large": large,
                 "path_cover_small": small,
                 "url_cover": remote,
