@@ -66,7 +66,8 @@ def test_matches_rom_by_title_id_and_counts_points():
     )
     assert game["achievements"][1]["badge_path"] is None
     assert second["earned_at"] is None
-    assert second["title"] == "Trofeo oculto" and second["description"] is None
+    # Hidden trophies show their real text: the console stores it in your language.
+    assert second["title"] == "Secreto" and second["description"] == "no se ve"
     assert game["earned_by_type"]["other"] == 1
 
 

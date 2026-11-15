@@ -40,7 +40,6 @@ _GRADES: dict[int, tuple[str, int]] = {
     3: ("silver", 30),
     4: ("bronze", 15),
 }
-_HIDDEN_TITLE = "Trofeo oculto"
 
 
 def _norm(name: object) -> str:
@@ -117,7 +116,6 @@ def build_vita_games(
                 continue
             kind, points = _GRADES.get(trophy.get("grade"), ("bronze", 15))
             earned = bool(trophy.get("unlocked"))
-            masked = bool(trophy.get("hidden")) and not earned
             points_total += points
             if earned:
                 earned_n += 1
@@ -126,8 +124,8 @@ def build_vita_games(
             items.append(
                 {
                     "id": f"vita-{title.get('npcommid')}-{trophy.get('id')}",
-                    "title": _HIDDEN_TITLE if masked else _text(trophy.get("title")),
-                    "description": None if masked else _text(trophy.get("description")),
+                    "title": _text(trophy.get("title")),
+                    "description": _text(trophy.get("description")),
                     "points": points,
                     "badge_url": None,
                     "badge_path": _public_badge_path(trophy.get("icon")),
