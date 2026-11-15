@@ -41,6 +41,11 @@ _GRADES: dict[int, tuple[str, int]] = {
 _HIDDEN_TITLE = "Trofeo oculto"
 
 
+def _norm(name: object) -> str:
+    """Comparable title: no ™/®, punctuation or case."""
+    return re.sub(r"[^a-z0-9]+", "", (_text(name) or "").casefold())
+
+
 def load_trophies(path: Path = TROPHIES_FILE) -> list[dict[str, Any]]:
     """Titles from the sync file; empty when it is missing or unreadable."""
     try:
@@ -73,14 +78,20 @@ def build_vita_games(
 ) -> list[AchievementGame]:
     """One game per trophy title whose ``PCS`` id matches a library ROM."""
     by_title_id: dict[str, Mapping[str, Any]] = {}
+    by_name: dict[str, Mapping[str, Any]] = {}
     for rom in sorted(roms, key=lambda r: r["id"]):
         match = _TITLE_ID.search(rom.get("fs_name") or "")
         if match:
             by_title_id.setdefault(match.group(1), rom)
+        by_name.setdefault(_norm(rom.get("name")), rom)
 
     games: list[AchievementGame] = []
     for title in titles:
-        rom = by_title_id.get(_text(title.get("title_id")) or "")
+        # The id comes from the app's own trophy folder; when the sync could not
+        # read it, fall back to the title text.
+        rom = by_title_id.get(_text(title.get("title_id")) or "") or by_name.get(
+            _norm(title.get("title"))
+        )
         trophies = title.get("trophies")
         if rom is None or not isinstance(trophies, list) or not trophies:
             continue

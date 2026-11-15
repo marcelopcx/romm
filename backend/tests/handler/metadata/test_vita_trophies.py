@@ -69,8 +69,14 @@ def test_matches_rom_by_title_id_and_counts_points():
     assert game["earned_by_type"]["other"] == 1
 
 
+def test_falls_back_to_title_text_when_the_id_is_unknown():
+    rom = {**ROM, "name": "FROBISHER SAYS!", "fs_name": "FROBISHER SAYS! [PCSA00050].zip"}
+    (game,) = build_vita_games([rom], [_title(title_id=None, title="Frobisher Says!™")])
+    assert game["rom_id"] == 7
+
+
 def test_title_without_matching_rom_is_skipped():
-    assert build_vita_games([ROM], [_title(title_id="PCSE99999")]) == []
+    assert build_vita_games([ROM], [_title(title_id="PCSE99999", title="Otro")]) == []
 
 
 def test_merge_adds_to_totals_and_marks_synced():
