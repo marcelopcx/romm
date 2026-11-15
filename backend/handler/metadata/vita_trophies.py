@@ -23,6 +23,7 @@ from handler.metadata.earned_achievements import (
     _completion_rank,
     _empty_counts,
     _group_covers,
+    _public_badge_path,
     _text,
 )
 from logger.logger import log
@@ -105,7 +106,7 @@ def build_vita_games(
                     "description": None if masked else _text(trophy.get("description")),
                     "points": points,
                     "badge_url": None,
-                    "badge_path": None,
+                    "badge_path": _public_badge_path(trophy.get("icon")),
                     "badge_url_lock": None,
                     "badge_path_lock": None,
                     "type": "win_condition" if kind == "platinum" else None,

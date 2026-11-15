@@ -35,6 +35,7 @@ def _title(**over):
                 "grade": 4,
                 "hidden": 0,
                 "unlocked": 1,
+                "icon": "vita-trophies/NPWR02124_00/TROP000.PNG",
                 "time_unlocked": "2026-01-15T20:31:17.13Z",
             },
             {
@@ -59,6 +60,10 @@ def test_matches_rom_by_title_id_and_counts_points():
     assert (game["points_earned"], game["points_total"]) == (15, 195)
     first, second = game["achievements"]
     assert first["earned_at"] == "2026-01-15 20:31:17"
+    assert first["badge_path"] == (
+        "/assets/romm/resources/vita-trophies/NPWR02124_00/TROP000.PNG"
+    )
+    assert game["achievements"][1]["badge_path"] is None
     assert second["earned_at"] is None
     assert second["title"] == "Trofeo oculto" and second["description"] is None
     assert game["earned_by_type"]["other"] == 1
