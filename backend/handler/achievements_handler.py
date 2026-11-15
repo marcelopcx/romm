@@ -57,8 +57,37 @@ async def library_overview(
             )
         ]
         schedule_achievement_media_fill()
-    return build_achievement_overview(
+    overview = build_achievement_overview(
         ra_username=getattr(user, "ra_username", None),
         ra_progression=progression,
         roms=visible,
     )
+    return _with_vita_trophies(overview, can_see_rom)
+
+
+def _with_vita_trophies(
+    overview: dict[str, Any], can_see_rom: Callable[[Any], bool]
+) -> dict[str, Any]:
+    """Add PS Vita console trophies (read locally, no PSN) when a sync file exists."""
+    from handler.database import db_rom_handler
+    from handler.metadata.vita_trophies import (
+        build_vita_games,
+        load_trophies,
+        merge_vita_games,
+    )
+
+    titles = load_trophies()
+    if not titles:
+        return overview
+    roms = [
+        source
+        for source in db_rom_handler.get_psvita_trophy_sources()
+        if can_see_rom(
+            SimpleNamespace(
+                id=source["id"],
+                platform_id=source["platform_id"],
+                min_age=source["min_age"],
+            )
+        )
+    ]
+    return merge_vita_games(overview, build_vita_games(roms, titles))  # type: ignore[arg-type]

@@ -1106,6 +1106,52 @@ class DBRomsHandler(DBBaseHandler):
         return sources
 
     @begin_session
+    def get_psvita_trophy_sources(
+        self,
+        *,
+        session: Session = INJECTED_SESSION,
+    ) -> list[dict[str, Any]]:
+        """PS Vita ROMs, matched to console trophies by the ``[PCS…]`` id in the file name."""
+        rows = session.execute(
+            select(
+                Rom.id,
+                Rom.name.label("rom_name"),
+                Rom.fs_name,
+                Rom.fs_name_no_tags,
+                Rom.platform_id,
+                Rom.min_age,
+                Rom.path_cover_l,
+                Rom.path_cover_s,
+                Rom.url_cover,
+                Rom.updated_at,
+                Platform.custom_name.label("platform_custom_name"),
+                Platform.name.label("platform_name"),
+                Platform.slug.label("platform_slug"),
+                Platform.fs_slug.label("platform_fs_slug"),
+            )
+            .join(Platform, Rom.platform_id == Platform.id)
+            .where(Platform.fs_slug == "psvita")
+        ).all()
+        return [
+            {
+                "id": row.id,
+                "name": (row.rom_name or row.fs_name_no_tags or "").strip()
+                or f"#{row.id}",
+                "fs_name": row.fs_name,
+                "platform_id": row.platform_id,
+                "min_age": row.min_age,
+                "platform_name": row.platform_custom_name or row.platform_name,
+                "platform_slug": row.platform_slug,
+                "platform_fs_slug": row.platform_fs_slug,
+                "path_cover_l": (row.path_cover_l or "").strip() or None,
+                "path_cover_s": (row.path_cover_s or "").strip() or None,
+                "url_cover": (row.url_cover or "").strip() or None,
+                "updated_at": row.updated_at,
+            }
+            for row in rows
+        ]
+
+    @begin_session
     def set_ra_image_icons(
         self,
         icons: Mapping[int, str],
